@@ -26,6 +26,8 @@ export interface Order extends BaseEntity {
   shopName: string;
   bookerId: string;
   bookerName?: string;  // Admin tracking: who created this order
+  salesmanId?: string; // Auto-assigned based on booker-salesman mapping
+  salesmanName?: string; // For display purposes
   regionId: string; // Inherited from booker
   status: OrderStatus;
   items: OrderItem[];

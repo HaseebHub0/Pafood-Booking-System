@@ -750,9 +750,10 @@ export const dataService = {
     async getRegionalSalesPerformance(dateRange: DateRange): Promise<Array<{ regionId: string; sales: number }>> {
         try {
             console.log('getRegionalSalesPerformance: Fetching from ledger entries for date range:', dateRange);
-            
             // Query ledger_transactions for SALE_DELIVERED and SALE entries
-            const { getDocs, query, where, collection } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+            // Use Firestore SDK import from your app's configuration (not remote URL)
+            // (Assume the following import at the top of this module, or adjust per project structure:)
+            // import { getDocs, query, where, collection } from "firebase/firestore";
             
             // Query for SALE_DELIVERED
             const saleDeliveredQuery = query(
@@ -3642,6 +3643,91 @@ export const dataService = {
         } catch (error: any) {
             console.error("Firestore Error [getSalesmanPendingCredits]:", error.message);
             return [];
+        }
+    },
+
+    /**
+     * Create or update salesman-booker mapping
+     */
+    async createOrUpdateMapping(salesmanId: string, salesmanName: string, bookerIds: string[], regionId: string, createdBy: string): Promise<string> {
+        try {
+            // Get booker names for display
+            const allUsers = await this.getAllUsers();
+            const bookerNames = bookerIds
+                .map(id => {
+                    const booker = allUsers.find(u => u.id === id);
+                    return booker?.name || 'Unknown';
+                })
+                .filter(Boolean);
+
+            // Check if mapping already exists for this salesman
+            const mappingsCollection = collection(db, 'mappings');
+            const existingMappingQuery = query(
+                mappingsCollection,
+                where('salesmanId', '==', salesmanId),
+                where('isActive', '==', true)
+            );
+
+            const mappingSnapshot = await getDocs(existingMappingQuery);
+
+            const now = new Date().toISOString();
+            const mappingData: any = {
+                salesmanId,
+                salesmanName,
+                bookerIds,
+                bookerNames,
+                regionId,
+                isActive: true,
+                updatedAt: now,
+            };
+
+            if (mappingSnapshot.empty) {
+                // Create new mapping
+                const docRef = await addDoc(mappingsCollection, {
+                    ...mappingData,
+                    createdAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                });
+                await this.logActivity(createdBy, `Created mapping for salesman: ${salesmanName} with ${bookerIds.length} booker(s)`);
+                return docRef.id;
+            } else {
+                // Update existing mapping
+                const existingDoc = mappingSnapshot.docs[0];
+                await updateDoc(doc(db, 'mappings', existingDoc.id), {
+                    ...mappingData,
+                    updatedAt: serverTimestamp(),
+                });
+                await this.logActivity(createdBy, `Updated mapping for salesman: ${salesmanName} with ${bookerIds.length} booker(s)`);
+                return existingDoc.id;
+            }
+        } catch (error: any) {
+            console.error("Firestore Error [createOrUpdateMapping]:", error);
+            throw new Error(`Failed to save mapping: ${error.message}`);
+        }
+    },
+
+    /**
+     * Get mapping for a salesman
+     */
+    async getMappingForSalesman(salesmanId: string): Promise<any | null> {
+        try {
+            const mappingsCollection = collection(db, 'mappings');
+            const mappingQuery = query(
+                mappingsCollection,
+                where('salesmanId', '==', salesmanId),
+                where('isActive', '==', true)
+            );
+
+            const snapshot = await getDocs(mappingQuery);
+            if (snapshot.empty) {
+                return null;
+            }
+
+            const mappingDoc = snapshot.docs[0];
+            return { id: mappingDoc.id, ...mappingDoc.data() };
+        } catch (error: any) {
+            console.error("Firestore Error [getMappingForSalesman]:", error);
+            return null;
         }
     }
 };

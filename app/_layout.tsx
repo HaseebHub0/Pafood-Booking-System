@@ -26,6 +26,10 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
+    // EAS Updates are handled automatically by expo-updates module
+    // Updates check on app load (configured in app.json: updates.checkAutomatically)
+    // No manual update check needed - expo-updates handles it automatically
+
     // Initialize Firebase
     initializeFirebase().catch((error) => {
       console.error('Firebase initialization error:', error);

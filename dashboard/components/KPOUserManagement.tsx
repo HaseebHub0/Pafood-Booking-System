@@ -29,6 +29,11 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
         password: '',
         maxDiscount: 0
     });
+    
+    // Booker assignment state (for salesman creation)
+    const [availableBookers, setAvailableBookers] = useState<User[]>([]);
+    const [selectedBookerIds, setSelectedBookerIds] = useState<string[]>([]);
+    const [loadingBookers, setLoadingBookers] = useState(false);
 
     // Load staff list on mount and when tab changes
     useEffect(() => {
@@ -56,6 +61,45 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
         }
     }, [activeTab, user.branch]);
 
+    // Load available bookers when form opens for salesman creation/edit
+    useEffect(() => {
+        const loadBookers = async () => {
+            if (showForm && formRole === 'Salesman' && user.branch) {
+                try {
+                    setLoadingBookers(true);
+                    const bookers = await dataService.getBranchBookers(user.branch || '');
+                    setAvailableBookers(bookers as User[]);
+                    
+                    // If editing, load existing mapping and pre-select assigned bookers
+                    if (editingUserId) {
+                        try {
+                            // Get mapping for this salesman
+                            const mapping = await dataService.getMappingForSalesman(editingUserId);
+                            if (mapping && mapping.bookerIds) {
+                                setSelectedBookerIds(mapping.bookerIds);
+                            }
+                        } catch (mappingError: any) {
+                            console.warn('Could not load existing mapping:', mappingError);
+                            setSelectedBookerIds([]);
+                        }
+                    } else {
+                        setSelectedBookerIds([]);
+                    }
+                } catch (err: any) {
+                    console.error('Error loading bookers:', err);
+                    setAvailableBookers([]);
+                    setSelectedBookerIds([]);
+                } finally {
+                    setLoadingBookers(false);
+                }
+            } else {
+                setAvailableBookers([]);
+                setSelectedBookerIds([]);
+            }
+        };
+        loadBookers();
+    }, [showForm, formRole, editingUserId, user.branch]);
+
     const handleEdit = (staff: User) => {
         setEditingUserId(staff.id);
         setFormData({
@@ -74,6 +118,8 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
         setFormRole('Salesman'); // Reset form role
         setError(null);
         setFormData({ name: '', email: '', password: '', maxDiscount: 0 });
+        setSelectedBookerIds([]);
+        setAvailableBookers([]);
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -138,6 +184,28 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
                 await dataService.updateUser(editingUserId, updateData);
                 console.log('User updated successfully');
 
+                // If salesman was updated and bookers were selected/changed, update mapping
+                if (currentRole === 'Salesman' && (user as any).regionId) {
+                    try {
+                        const userData = staffList.find(s => s.id === editingUserId);
+                        const salesmanName = userData?.name || formData.name;
+                        
+                        console.log('Updating mapping for salesman:', editingUserId, 'with bookers:', selectedBookerIds);
+                        await dataService.createOrUpdateMapping(
+                            editingUserId,
+                            salesmanName,
+                            selectedBookerIds, // Empty array if none selected will clear mapping
+                            (user as any).regionId,
+                            user.id
+                        );
+                        console.log('Mapping updated successfully');
+                    } catch (mappingError: any) {
+                        console.error('Error updating mapping:', mappingError);
+                        // Don't fail the user update if mapping fails, but log it
+                        alert(`${activeTab} updated successfully, but there was an error updating booker assignments. Please try again.`);
+                    }
+                }
+
             // Reload staff list based on the role that was created/updated
             const staff = currentRole === 'Booker' 
                 ? await dataService.getBranchBookers(user.branch)
@@ -197,6 +265,25 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
                 // Create user via dataService
                 const createdUser = await dataService.createUser(userData);
                 console.log('User created successfully:', createdUser);
+
+                // If salesman was created and bookers were selected, create mapping
+                if (currentRole === 'Salesman' && selectedBookerIds.length > 0 && (user as any).regionId) {
+                    try {
+                        console.log('Creating mapping for salesman:', createdUser.id, 'with bookers:', selectedBookerIds);
+                        await dataService.createOrUpdateMapping(
+                            createdUser.id,
+                            createdUser.name || formData.name,
+                            selectedBookerIds,
+                            (user as any).regionId,
+                            user.id
+                        );
+                        console.log('Mapping created successfully');
+                    } catch (mappingError: any) {
+                        console.error('Error creating mapping:', mappingError);
+                        // Don't fail the user creation if mapping fails, but log it
+                        alert(`${activeTab} created successfully, but there was an error assigning bookers. Please assign them manually.`);
+                    }
+                }
 
                 // Reload staff list based on the role that was created
                 console.log('Reloading staff list for role:', currentRole);
@@ -416,6 +503,47 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
                                     />
                                     <span className="absolute right-4 top-3.5 text-slate-400 font-bold">%</span>
                                 </div>
+                            </div>
+                        )}
+
+                        {formRole === 'Salesman' && (
+                            <div className="md:col-span-2 space-y-2">
+                                <label className="text-xs font-bold uppercase text-slate-500">Assign Bookers (Optional)</label>
+                                <p className="text-[10px] text-slate-400 mb-2">Select bookers whose orders will be delivered by this salesman</p>
+                                {loadingBookers ? (
+                                    <div className="text-center py-4 text-slate-400 text-sm">Loading bookers...</div>
+                                ) : availableBookers.length === 0 ? (
+                                    <div className="text-center py-4 text-slate-400 text-sm">No bookers available in this branch</div>
+                                ) : (
+                                    <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl p-3 space-y-2 bg-slate-50">
+                                        {availableBookers.map(booker => (
+                                            <label 
+                                                key={booker.id}
+                                                className="flex items-center gap-3 p-2 rounded-lg hover:bg-white cursor-pointer transition-colors"
+                                            >
+                                                <input 
+                                                    type="checkbox"
+                                                    className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                                                    checked={selectedBookerIds.includes(booker.id)}
+                                                    onChange={e => {
+                                                        if (e.target.checked) {
+                                                            setSelectedBookerIds([...selectedBookerIds, booker.id]);
+                                                        } else {
+                                                            setSelectedBookerIds(selectedBookerIds.filter(id => id !== booker.id));
+                                                        }
+                                                    }}
+                                                />
+                                                <span className="text-sm text-slate-700 font-medium">{booker.name}</span>
+                                                <span className="text-xs text-slate-400">({booker.email})</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                )}
+                                {selectedBookerIds.length > 0 && (
+                                    <p className="text-xs text-green-600 mt-2">
+                                        {selectedBookerIds.length} booker(s) selected
+                                    </p>
+                                )}
                             </div>
                         )}
 

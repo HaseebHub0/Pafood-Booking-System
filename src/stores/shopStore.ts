@@ -246,6 +246,29 @@ export const useShopStore = create<ShopStore>((set, get) => ({
       throw new Error(`Shop ID "${data.shopId}" already exists`);
     }
 
+    // Get salesman assignment from mapping
+    let salesmanId: string | undefined;
+    let salesmanName: string | undefined;
+    try {
+      const { useMappingStore } = await import('./mappingStore');
+      await useMappingStore.getState().loadMappings();
+      const salesmanIdFromMapping = useMappingStore.getState().getSalesmanForBooker(currentUser.id);
+      if (salesmanIdFromMapping) {
+        salesmanId = salesmanIdFromMapping;
+        // Get salesman name from users
+        const { firestoreService } = await import('../services/firebase');
+        const { COLLECTIONS } = await import('../services/firebase/collections');
+        try {
+          const salesmanUser = await firestoreService.getDoc<any>(COLLECTIONS.USERS, salesmanIdFromMapping);
+          salesmanName = salesmanUser?.name || 'Unknown';
+        } catch (e) {
+          console.warn('Could not fetch salesman name:', e);
+        }
+      }
+    } catch (e) {
+      console.warn('Could not load mapping for salesman assignment:', e);
+    }
+
     const newShop: Shop = {
       id: uuidv4(), // Internal ID (for database)
       shopId: data.shopId.trim(), // Manual Shop ID (required by client)
@@ -257,6 +280,8 @@ export const useShopStore = create<ShopStore>((set, get) => ({
       city: data.city,
       bookerId: currentUser.id,
       bookerName: currentUser.name || currentUser.email || 'Unknown', // Admin tracking: who created this shop
+      salesmanId, // Auto-assigned from mapping
+      salesmanName, // Auto-assigned from mapping
       regionId: currentUser.regionId || 'Unknown', // Inherit region from booker
       branch: currentUser.branch || undefined, // Inherit branch from booker
       isActive: true,

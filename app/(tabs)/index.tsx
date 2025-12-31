@@ -13,10 +13,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore, useShopStore, useOrderStore, useDeliveryStore, useRouteStore, useOutstandingPaymentStore } from '../../src/stores';
 import { Card, Badge, Skeleton, EmptyState } from '../../src/components';
+import { RoleBasedSplash } from '../../src/components/common/RoleBasedSplash';
 import { colors, typography, spacing, borderRadius, shadows, animations } from '../../src/theme';
 
 export default function DashboardScreen() {
   const { user } = useAuthStore();
+  const [showSplash, setShowSplash] = useState(true);
   const { shops, loadShops, isLoading: shopsLoading } = useShopStore();
   const { orders, loadOrders, isLoading: ordersLoading } = useOrderStore();
   const { deliveries, loadDeliveries, getPendingDeliveries, isLoading: deliveriesLoading } = useDeliveryStore();
@@ -29,6 +31,20 @@ export default function DashboardScreen() {
   const isBooker = user?.role === 'booker';
   const isSalesman = user?.role === 'salesman';
   const isLoading = shopsLoading || ordersLoading;
+
+  // Show role-based splash screen on first load
+  useEffect(() => {
+    // Only show splash if user is logged in and has a role
+    if (user && user.role && (user.role === 'booker' || user.role === 'salesman')) {
+      // Splash will auto-hide after 2 seconds
+      const timer = setTimeout(() => {
+        setShowSplash(false);
+      }, 2300); // Slightly longer than splash animation
+      return () => clearTimeout(timer);
+    } else {
+      setShowSplash(false);
+    }
+  }, [user]);
 
   // Animation refs for stats
   const shopCardAnim = useRef(new Animated.Value(0)).current;
@@ -241,6 +257,16 @@ export default function DashboardScreen() {
     if (hour < 17) return 'Good Afternoon';
     return 'Good Evening';
   };
+
+  // Show role-based splash screen
+  if (showSplash && user && (user.role === 'booker' || user.role === 'salesman')) {
+    return (
+      <RoleBasedSplash
+        role={user.role}
+        onFinish={() => setShowSplash(false)}
+      />
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
