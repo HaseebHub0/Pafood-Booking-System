@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pak Asian Foods Dashboard</title>
+    
+    <!-- Google Fonts: Spline Sans -->
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect" />
+    <link href="https://fonts.googleapis.com/css2?family=Spline+Sans:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet" />
+    
+    <!-- Material Symbols -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet" />
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    
+    <!-- Tailwind Configuration -->
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#D71920", /* Pak Asian Red */
+                        "secondary": "#008D41", /* Pak Asian Leaf Green */
+                        "background-light": "#ffffff",
+                        "background-dark": "#120505",
+                        "surface-dark": "#200e0e",
+                        "surface-light": "#f8fafc", /* Slate 50 */
+                        "glass-dark": "rgba(32, 14, 14, 0.7)",
+                        "glass-light": "rgba(255, 255, 255, 0.8)",
+                        "glass-border": "rgba(0, 0, 0, 0.05)",
+                    },
+                    fontFamily: {
+                        "sans": ["Spline Sans", "sans-serif"],
+                        "display": ["Spline Sans", "sans-serif"]
+                    },
+                    borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+                    backgroundImage: {
+                        'mesh-light': 'radial-gradient(at 0% 0%, hsla(358, 79%, 47%, 0.03) 0px, transparent 50%), radial-gradient(at 100% 0%, hsla(148, 100%, 28%, 0.03) 0px, transparent 50%), radial-gradient(at 100% 100%, hsla(358, 79%, 47%, 0.02) 0px, transparent 50%), radial-gradient(at 0% 100%, hsla(148, 100%, 28%, 0.02) 0px, transparent 50%)',
+                    }
+                },
+            },
+        }
+    </script>
+    <style>
+        body {
+            font-family: "Spline Sans", sans-serif;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        
+        /* Glassmorphism Utilities */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        }
+        .dark .glass-panel {
+            background: rgba(32, 14, 14, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "recharts": "https://esm.sh/recharts@^3.6.0",
+    "jspdf": "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"
+  }
+}
+</script>
+  <!-- jsPDF CDN - Load synchronously for immediate availability -->
+  <script>
+    // Pre-load jsPDF to ensure it's available
+    (function() {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      script.async = false;
+      document.head.appendChild(script);
+    })();
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-background-light text-slate-900 antialiased selection:bg-primary selection:text-white min-h-screen bg-mesh-light bg-fixed">
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

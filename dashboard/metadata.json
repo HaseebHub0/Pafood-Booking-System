@@ -1,0 +1,5 @@
+{
+  "name": "Admin Control Dashboard",
+  "description": "A high-fidelity, dark-themed admin dashboard featuring real-time sales insights, regional performance charts, and transaction management.",
+  "requestFramePermissions": []
+}

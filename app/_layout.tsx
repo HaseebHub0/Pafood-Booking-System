@@ -1,0 +1,170 @@
+import 'react-native-get-random-values'; // Must be imported before uuid
+import React, { useEffect, useState } from 'react';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { View, ActivityIndicator, StyleSheet, Platform, AppState, AppStateStatus } from 'react-native';
+import { useAuthStore } from '../src/stores';
+import { useSyncStore } from '../src/stores/syncStore';
+import { hybridStorage } from '../src/services/storage/hybridStorage';
+import { colors } from '../src/theme';
+import { initializeFirebase } from '../src/services/firebase/init';
+
+export default function RootLayout() {
+  const { isLoading, checkAuth } = useAuthStore();
+  const [ToastComponent, setToastComponent] = useState<React.ComponentType | null>(null);
+
+  // Load Toast component only on native platforms
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      try {
+        const Toast = require('react-native-toast-message').default;
+        setToastComponent(() => Toast);
+      } catch (error) {
+        // Toast not available
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    // Initialize Firebase
+    initializeFirebase().catch((error) => {
+      console.error('Firebase initialization error:', error);
+    });
+    
+    // Check auth status
+    checkAuth();
+
+    // Setup network monitoring (only on native platforms)
+    let networkCheckInterval: ReturnType<typeof setInterval> | null = null;
+    
+    const setupNetworkMonitoring = async () => {
+      // Skip on web - assume always online
+      if (Platform.OS === 'web') {
+        useSyncStore.getState().setOnlineStatus(true);
+        hybridStorage.setNetworkStatus(true);
+        return;
+      }
+
+      // Dynamically import Network module for native platforms
+      let Network: any;
+      try {
+        Network = require('expo-network');
+      } catch (error) {
+        console.warn('[Network] Network module not available');
+        useSyncStore.getState().setOnlineStatus(true);
+        hybridStorage.setNetworkStatus(true);
+        return;
+      }
+
+      try {
+        // Initial check
+        const initialNetworkState = await Network.getNetworkStateAsync();
+        const isOnline = initialNetworkState.isConnected ?? false;
+        
+        useSyncStore.getState().setOnlineStatus(isOnline);
+        hybridStorage.setNetworkStatus(isOnline);
+        
+        console.log(`[Network] Initial network status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
+        
+        // Poll network status every 3 seconds
+        networkCheckInterval = setInterval(async () => {
+          try {
+            const networkState = await Network.getNetworkStateAsync();
+            const currentlyOnline = networkState.isConnected ?? false;
+            const previousOnline = useSyncStore.getState().isOnline;
+            
+            if (currentlyOnline !== previousOnline) {
+              console.log(`[Network] Network status changed: ${previousOnline ? 'ONLINE' : 'OFFLINE'} → ${currentlyOnline ? 'ONLINE' : 'OFFLINE'}`);
+              useSyncStore.getState().setOnlineStatus(currentlyOnline);
+              hybridStorage.setNetworkStatus(currentlyOnline);
+            }
+          } catch (error) {
+            console.warn('[Network] Error checking network status:', error);
+          }
+        }, 3000);
+      } catch (error) {
+        console.warn('[Network] Error setting up network monitoring:', error);
+        // Assume online if we can't check
+        useSyncStore.getState().setOnlineStatus(true);
+        hybridStorage.setNetworkStatus(true);
+      }
+    };
+
+    setupNetworkMonitoring();
+
+    // Cleanup
+    return () => {
+      if (networkCheckInterval) {
+        clearInterval(networkCheckInterval);
+      }
+    };
+  }, []);
+
+  // Handle app state changes to continue location tracking in background
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      // Location tracking continues in background automatically
+      // No action needed, but we log for debugging
+      if (nextAppState === 'background' || nextAppState === 'active') {
+        console.log('[AppState] App state changed to:', nextAppState);
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  // Start location tracking if user is already logged in (from checkAuth)
+  useEffect(() => {
+    const { user } = useAuthStore.getState();
+    if (user && user.role === 'booker' && Platform.OS !== 'web') {
+      // Start location tracking for already logged-in bookers
+      const startTracking = async () => {
+        try {
+          const { useLocationTrackingStore } = await import('../src/stores/locationTrackingStore');
+          const { isTracking } = useLocationTrackingStore.getState();
+          if (!isTracking) {
+            await useLocationTrackingStore.getState().startTracking(user);
+          }
+        } catch (error) {
+          console.warn('Failed to start location tracking on app mount:', error);
+        }
+      };
+      startTracking();
+    }
+  }, []);
+
+  if (isLoading) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator size="large" color={colors.primary[500]} />
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      </Stack>
+      {ToastComponent && <ToastComponent />}
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.background,
+  },
+});
+
