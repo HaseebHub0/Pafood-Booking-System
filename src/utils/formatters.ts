@@ -3,6 +3,17 @@ export const formatCurrency = (amount: number): string => {
   return `Rs. ${amount.toLocaleString('en-PK')}`;
 };
 
+// Safe PKR currency formatter - handles null/undefined
+export const formatPKR = (amount: number | null | undefined): string => {
+  if (amount === null || amount === undefined || isNaN(amount)) {
+    return 'Rs. 0';
+  }
+  if (amount === 0) {
+    return 'Rs. 0';
+  }
+  return `Rs. ${amount.toLocaleString('en-PK')}`;
+};
+
 // Phone number formatting
 export const formatPhoneNumber = (phone: string): string => {
   const cleaned = phone.replace(/\D/g, '');

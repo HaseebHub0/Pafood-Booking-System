@@ -27,6 +27,22 @@ const getFirebaseImports = async () => {
  * - unauthorized_discount = max(0, discount_given - discount_allowed)
  * - net_cash = gross_amount - discount_given
  */
+/**
+ * Validate required fields for ledger entry
+ */
+function validateLedgerEntryFields(order: Order, regionId: string, branchId?: string): void {
+  if (!order.id) {
+    throw new Error('Order ID is required for ledger entry');
+  }
+  if (!regionId || regionId.trim() === '') {
+    throw new Error('Region ID is required for ledger entry');
+  }
+  // branchId is optional, but if order has branch, we should use it
+  if (!branchId && !order.branch) {
+    console.warn('Ledger entry: No branch ID provided and order has no branch');
+  }
+}
+
 export async function createLedgerEntryOnDelivery(
   order: Order,
   deliveredBy: string, // User ID who marked as delivered
@@ -34,6 +50,30 @@ export async function createLedgerEntryOnDelivery(
   branchId?: string
 ): Promise<LedgerTransaction | null> {
   try {
+    // VALIDATION: Check required fields
+    const regionId = order.regionId || '';
+    validateLedgerEntryFields(order, regionId, branchId);
+
+    // IDEMPOTENCY CHECK: Query Firebase for existing SALE_DELIVERED entry for this order
+    const { firestoreService, COLLECTIONS } = await getFirebaseImports();
+    const { query, where, getDocs } = await import('firebase/firestore');
+    const { db } = await import('../config/firebase');
+    const { collection } = await import('firebase/firestore');
+    
+    const ledgerRef = collection(db, COLLECTIONS.LEDGER_TRANSACTIONS);
+    const existingEntryQuery = query(
+      ledgerRef,
+      where('order_id', '==', order.id),
+      where('type', '==', 'SALE_DELIVERED')
+    );
+    const existingEntrySnapshot = await getDocs(existingEntryQuery);
+    
+    if (!existingEntrySnapshot.empty) {
+      const existingEntry = existingEntrySnapshot.docs[0].data() as LedgerTransaction;
+      console.log('createLedgerEntryOnDelivery: SALE_DELIVERED entry already exists for orderId:', order.id, '- returning existing entry');
+      return existingEntry;
+    }
+
     // Extract values from order
     const gross_amount = order.subtotal || 0;
     const discount_allowed = order.allowedDiscount || 0;
@@ -46,7 +86,7 @@ export async function createLedgerEntryOnDelivery(
       id: uuidv4(),
       ledger_id: uuidv4(),
       created_at: new Date().toISOString(),
-      region_id: order.regionId || '',
+      region_id: regionId,
       branch_id: branchId || order.branch,
       party_id: order.shopId,
       order_id: order.id,
@@ -72,7 +112,6 @@ export async function createLedgerEntryOnDelivery(
     };
 
     // Save to Firebase
-    const { firestoreService, COLLECTIONS } = await getFirebaseImports();
     
     // Sanitize entry to remove undefined values
     const { sanitizeForFirebase } = await import('../utils/dataSanitizers');
@@ -109,12 +148,6 @@ export async function createLedgerEntryOnReturn(
   branchId?: string
 ): Promise<LedgerTransaction | null> {
   try {
-    const gross_amount = 0;
-    const discount_allowed = 0;
-    const discount_given = 0;
-    const unauthorized_discount = 0;
-    const net_cash = -(stockReturn.totalValue || 0); // Negative for return
-
     // Get shop's region_id and branch
     const { useShopStore } = await import('../stores/shopStore');
     const shopStore = useShopStore.getState();
@@ -124,11 +157,34 @@ export async function createLedgerEntryOnReturn(
       throw new Error(`Shop not found for return ${stockReturn.returnNumber}`);
     }
 
+    // VALIDATION: Ensure return uses same region as shop
+    const regionId = shop.regionId || '';
+    if (!regionId || regionId.trim() === '') {
+      throw new Error(`Region ID is required for return ledger entry. Shop ${shop.shopName} has no regionId.`);
+    }
+
+    // VALIDATION: If return has orderId, verify it matches shop's region
+    // (Note: Returns may not have orderId, but if they do, they should match)
+    if ((stockReturn as any).orderId) {
+      const { useOrderStore } = await import('../stores/orderStore');
+      const orderStore = useOrderStore.getState();
+      const order = orderStore.getOrderById((stockReturn as any).orderId);
+      if (order && order.regionId !== regionId) {
+        console.warn(`Return regionId (${regionId}) does not match order regionId (${order.regionId}). Using shop's regionId.`);
+      }
+    }
+
+    const gross_amount = 0;
+    const discount_allowed = 0;
+    const discount_given = 0;
+    const unauthorized_discount = 0;
+    const net_cash = -(stockReturn.totalValue || 0); // Negative for return
+
     const ledgerEntry: LedgerTransaction = {
       id: uuidv4(),
       ledger_id: uuidv4(),
       created_at: new Date().toISOString(),
-      region_id: shop.regionId || '',
+      region_id: regionId, // Use validated regionId
       branch_id: branchId || shop.branch,
       party_id: stockReturn.shopId,
       type: 'RETURN',
@@ -200,6 +256,12 @@ export async function createLedgerEntryAdjustment(
       throw new Error(`Shop not found: ${data.party_id}`);
     }
 
+    // VALIDATION: Ensure regionId is present
+    const regionId = shop.regionId || '';
+    if (!regionId || regionId.trim() === '') {
+      throw new Error(`Region ID is required for adjustment ledger entry. Shop ${shop.shopName} has no regionId.`);
+    }
+
     const gross_amount = 0;
     const discount_allowed = 0;
     const discount_given = 0;
@@ -210,7 +272,7 @@ export async function createLedgerEntryAdjustment(
       id: uuidv4(),
       ledger_id: uuidv4(),
       created_at: new Date().toISOString(),
-      region_id: shop.regionId || '',
+      region_id: regionId, // Use validated regionId
       branch_id: branchId || data.branch_id || shop.branch,
       party_id: data.party_id,
       type: 'ADJUSTMENT',

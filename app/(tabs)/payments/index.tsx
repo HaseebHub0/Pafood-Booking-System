@@ -11,16 +11,17 @@ import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useShopStore, useLedgerStore, useAuthStore, useOutstandingPaymentStore, useBillStore } from '../../../src/stores';
-import { Card, EmptyState, SearchBar, CreditBadge } from '../../../src/components';
+import { Card, EmptyState, SearchBar } from '../../../src/components';
 import { colors, typography, spacing, borderRadius, shadows } from '../../../src/theme';
 import { Shop } from '../../../src/types/shop';
+import { formatPKR } from '../../../src/utils/formatters';
 
 export default function PaymentsScreen() {
   const { shops, loadShops } = useShopStore();
   const { getLedgerStats, loadTransactions } = useLedgerStore();
   const { user } = useAuthStore();
   const { outstandingPayments, loadOutstandingPayments, getOutstandingPaymentsBySalesman } = useOutstandingPaymentStore();
-  const { bills, loadBills, getPendingCreditBills } = useBillStore();
+  const { bills, loadBills, getPendingCreditBills, getShopBalance } = useBillStore();
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showOnlyDue, setShowOnlyDue] = useState(true);
@@ -66,24 +67,43 @@ export default function PaymentsScreen() {
 
   const stats = getLedgerStats();
 
+  // Calculate shop balances from bills (since shop.currentBalance doesn't exist)
+  const shopsWithBalance = shops.map(shop => {
+    const balance = getShopBalance(shop.id);
+    const shopBills = bills.filter(b => 
+      b.shopId === shop.id && b.paymentStatus !== 'PAID' && (b.remainingCredit || 0) > 0
+    );
+    return {
+      ...shop,
+      computedBalance: balance,
+      billsCount: shopBills.length,
+    };
+  });
+
   // Filter shops based on search and due filter
-  const filteredShops = shops.filter((shop) => {
+  const filteredShops = shopsWithBalance.filter((shop) => {
     // Search filter
     const matchesSearch =
       !searchQuery ||
       shop.shopName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       shop.ownerName.toLowerCase().includes(searchQuery.toLowerCase());
 
-    // Due filter
-    const matchesDue = !showOnlyDue || shop.currentBalance > 0;
+    // Due filter - use computed balance
+    const matchesDue = !showOnlyDue || shop.computedBalance > 0;
 
     return matchesSearch && matchesDue;
   });
 
-  // Sort by balance descending
+  // Sort by computed balance descending
   const sortedShops = [...filteredShops].sort(
-    (a, b) => b.currentBalance - a.currentBalance
+    (a, b) => b.computedBalance - a.computedBalance
   );
+
+  // Calculate stats from bills for salesman
+  const totalOutstandingAmount = isSalesman && user?.id
+    ? pendingCreditBills.reduce((sum, bill) => sum + (bill.remainingCredit || 0), 0)
+    : stats.totalOutstanding;
+  const shopsWithDueCount = sortedShops.filter(s => s.computedBalance > 0).length;
 
   const handleCollectPayment = (shopId: string) => {
     router.push({
@@ -107,7 +127,7 @@ export default function PaymentsScreen() {
         <View style={styles.todayStats}>
           <Text style={styles.todayLabel}>Today</Text>
           <Text style={styles.todayValue}>
-            Rs. {stats.todayCollections.toLocaleString()}
+            {formatPKR(stats.todayCollections || 0)}
           </Text>
         </View>
       </View>
@@ -122,7 +142,7 @@ export default function PaymentsScreen() {
                 You have {pendingCreditBills.length} pending credit bill{pendingCreditBills.length > 1 ? 's' : ''}
               </Text>
               <Text style={styles.creditReminderSubtitle}>
-                Total remaining: Rs. {pendingCreditBills.reduce((sum, bill) => sum + bill.remainingCredit, 0).toLocaleString()}
+                Total remaining: {formatPKR(pendingCreditBills.reduce((sum, bill) => sum + (bill.remainingCredit || 0), 0))}
               </Text>
             </View>
           </View>
@@ -158,7 +178,7 @@ export default function PaymentsScreen() {
             <Ionicons name="wallet" size={20} color={colors.primary[500]} />
           </View>
           <Text style={styles.statValue}>
-            Rs. {(stats.totalOutstanding / 1000).toFixed(1)}k
+            {totalOutstandingAmount > 0 ? formatPKR(totalOutstandingAmount) : '--'}
           </Text>
           <Text style={styles.statLabel}>Total Due</Text>
         </Card>
@@ -167,7 +187,7 @@ export default function PaymentsScreen() {
           <View style={styles.statIcon}>
             <Ionicons name="storefront" size={20} color={colors.secondary[500]} />
           </View>
-          <Text style={styles.statValue}>{stats.shopsWithCredit}</Text>
+          <Text style={styles.statValue}>{shopsWithDueCount}</Text>
           <Text style={styles.statLabel}>Shops with Due</Text>
         </Card>
       </View>
@@ -186,7 +206,7 @@ export default function PaymentsScreen() {
                 </View>
                 <View style={styles.outstandingAmount}>
                   <Text style={styles.outstandingRemaining}>
-                    Rs. {bill.remainingCredit.toLocaleString()}
+                    {formatPKR(bill.remainingCredit)}
                   </Text>
                   <Text style={styles.outstandingLabel}>Remaining</Text>
                 </View>
@@ -195,13 +215,13 @@ export default function PaymentsScreen() {
                 <View style={styles.outstandingDetailRow}>
                   <Text style={styles.outstandingDetailLabel}>Total Bill:</Text>
                   <Text style={styles.outstandingDetailValue}>
-                    Rs. {bill.totalAmount.toLocaleString()}
+                    {formatPKR(bill.totalAmount)}
                   </Text>
                 </View>
                 <View style={styles.outstandingDetailRow}>
                   <Text style={styles.outstandingDetailLabel}>Paid:</Text>
                   <Text style={[styles.outstandingDetailValue, { color: colors.success }]}>
-                    Rs. {bill.paidAmount.toLocaleString()}
+                    {formatPKR(bill.paidAmount)}
                   </Text>
                 </View>
                 <View style={styles.outstandingDetailRow}>
@@ -217,7 +237,7 @@ export default function PaymentsScreen() {
                 <View style={styles.outstandingDetailRow}>
                   <Text style={styles.outstandingDetailLabel}>Bill Date:</Text>
                   <Text style={styles.outstandingDetailValue}>
-                    {new Date(bill.billedAt).toLocaleDateString('en-PK')}
+                    {bill.billedAt ? new Date(bill.billedAt).toLocaleDateString('en-PK') : 'N/A'}
                   </Text>
                 </View>
               </View>
@@ -294,63 +314,72 @@ export default function PaymentsScreen() {
     </View>
   );
 
-  const renderShopItem = ({ item: shop }: { item: Shop }) => (
-    <Card style={styles.shopCard}>
-      <TouchableOpacity
-        style={styles.shopHeader}
-        onPress={() => handleViewLedger(shop.id)}
-      >
-        <View style={styles.shopInfo}>
-          <Text style={styles.shopName}>{shop.shopName}</Text>
-          <Text style={styles.shopOwner}>{shop.ownerName}</Text>
-        </View>
-        <CreditBadge
-          balance={shop.currentBalance}
-          creditLimit={shop.creditLimit}
-          size="md"
-        />
-      </TouchableOpacity>
-
-      <View style={styles.shopDetails}>
-        <View style={styles.detailRow}>
-          <Ionicons name="location-outline" size={14} color={colors.text.muted} />
-          <Text style={styles.detailText} numberOfLines={1}>
-            {shop.address}
-          </Text>
-        </View>
-        <View style={styles.detailRow}>
-          <Ionicons name="call-outline" size={14} color={colors.text.muted} />
-          <Text style={styles.detailText}>{shop.phone}</Text>
-        </View>
-      </View>
-
-      {shop.currentBalance > 0 && (
+  const renderShopItem = ({ item: shop }: { item: Shop & { computedBalance: number; billsCount: number } }) => {
+    const balance = shop.computedBalance || 0;
+    
+    return (
+      <Card style={styles.shopCard}>
         <TouchableOpacity
-          style={styles.collectButton}
-          onPress={() => handleCollectPayment(shop.id)}
+          style={styles.shopHeader}
+          onPress={() => handleViewLedger(shop.id)}
         >
-          <Ionicons name="cash" size={18} color={colors.text.inverse} />
-          <Text style={styles.collectButtonText}>Collect Payment</Text>
+          <View style={styles.shopInfo}>
+            <Text style={styles.shopName}>{shop.shopName}</Text>
+            <Text style={styles.shopOwner}>{shop.ownerName}</Text>
+          </View>
+          <View style={styles.balanceBadge}>
+            <Text style={[styles.balanceText, balance > 0 && styles.balanceDue]}>
+              {formatPKR(balance)}
+            </Text>
+            {shop.billsCount > 0 && (
+              <Text style={styles.billsCountText}>
+                {shop.billsCount} {shop.billsCount === 1 ? 'bill' : 'bills'}
+              </Text>
+            )}
+          </View>
         </TouchableOpacity>
-      )}
 
-      {shop.currentBalance < 0 && (
-        <View style={styles.advanceNote}>
-          <Ionicons name="information-circle" size={16} color={colors.info} />
-          <Text style={styles.advanceText}>
-            Shop has advance of Rs. {Math.abs(shop.currentBalance).toLocaleString()}
-          </Text>
+        <View style={styles.shopDetails}>
+          <View style={styles.detailRow}>
+            <Ionicons name="location-outline" size={14} color={colors.text.muted} />
+            <Text style={styles.detailText} numberOfLines={1}>
+              {shop.address}
+            </Text>
+          </View>
+          <View style={styles.detailRow}>
+            <Ionicons name="call-outline" size={14} color={colors.text.muted} />
+            <Text style={styles.detailText}>{shop.phone}</Text>
+          </View>
         </View>
-      )}
 
-      {shop.currentBalance === 0 && (
-        <View style={styles.clearedNote}>
-          <Ionicons name="checkmark-circle" size={16} color={colors.success} />
-          <Text style={styles.clearedText}>All dues cleared</Text>
-        </View>
-      )}
-    </Card>
-  );
+        {balance > 0 && (
+          <TouchableOpacity
+            style={styles.collectButton}
+            onPress={() => handleCollectPayment(shop.id)}
+          >
+            <Ionicons name="cash" size={18} color={colors.text.inverse} />
+            <Text style={styles.collectButtonText}>Collect Payment</Text>
+          </TouchableOpacity>
+        )}
+
+        {balance < 0 && (
+          <View style={styles.advanceNote}>
+            <Ionicons name="information-circle" size={16} color={colors.info} />
+            <Text style={styles.advanceText}>
+              Shop has advance of {formatPKR(Math.abs(balance))}
+            </Text>
+          </View>
+        )}
+
+        {balance === 0 && (
+          <View style={styles.clearedNote}>
+            <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+            <Text style={styles.clearedText}>All dues cleared</Text>
+          </View>
+        )}
+      </Card>
+    );
+  };
 
   const renderEmpty = () => (
     <EmptyState
@@ -720,6 +749,29 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
     marginTop: 2,
     fontSize: 11,
+  },
+  balanceBadge: {
+    backgroundColor: colors.gray[50],
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'flex-end',
+  },
+  balanceText: {
+    ...typography.bodyMedium,
+    fontWeight: '700',
+    color: colors.text.primary,
+  },
+  balanceDue: {
+    color: colors.primary[500],
+  },
+  billsCountText: {
+    ...typography.caption,
+    color: colors.text.muted,
+    marginTop: 2,
+    fontSize: 10,
   },
 });
 

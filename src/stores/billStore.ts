@@ -20,6 +20,7 @@ interface BillActions {
   getBillsByShop: (shopId: string) => Bill[];
   getBillsByStatus: (paymentStatus: BillPaymentStatus) => Bill[];
   getPendingCreditBills: (salesmanId?: string) => Bill[];
+  getShopBalance: (shopId: string) => number;
 }
 
 type BillStore = BillState & BillActions;
@@ -247,6 +248,15 @@ export const useBillStore = create<BillStore>((set, get) => ({
     return filteredBills.sort((a, b) => 
       new Date(b.billedAt).getTime() - new Date(a.billedAt).getTime()
     );
+  },
+
+  getShopBalance: (shopId) => {
+    const { bills } = get();
+    // Sum all remainingCredit from unpaid bills for this shop
+    const shopBills = bills.filter(b => 
+      b.shopId === shopId && b.paymentStatus !== 'PAID' && b.remainingCredit > 0
+    );
+    return shopBills.reduce((sum, bill) => sum + (bill.remainingCredit || 0), 0);
   },
 }));
 

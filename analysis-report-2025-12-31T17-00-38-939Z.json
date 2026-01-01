@@ -1,0 +1,95 @@
+{
+  "timestamp": "2025-12-31T17:00:38.939Z",
+  "ledgerIssues": {
+    "duplicateSales": [
+      {
+        "orderId": "cdf6a345-42c4-4c2a-923d-6680e0328f38",
+        "orderNumber": "ORD-2025-3508",
+        "entries": [
+          {
+            "ledgerId": "0a432c49-565d-4443-a9ab-e4daf7a38bd2",
+            "createdAt": {
+              "type": "firestore/timestamp/1.0",
+              "seconds": 1767185172,
+              "nanoseconds": 328000000
+            },
+            "net_cash": 2520.4,
+            "region_id": "region-1",
+            "branch_id": "Peshawar Branch 1",
+            "hasCompleteFields": true
+          },
+          {
+            "ledgerId": "b3eaaeb0-dfa3-43be-876a-7b431cde6f2b",
+            "createdAt": {
+              "type": "firestore/timestamp/1.0",
+              "seconds": 1767185171,
+              "nanoseconds": 6000000
+            },
+            "net_cash": 2520.4,
+            "region_id": "region-1",
+            "branch_id": "Peshawar Branch 1",
+            "hasCompleteFields": true
+          }
+        ],
+        "keepEntry": "0a432c49-565d-4443-a9ab-e4daf7a38bd2",
+        "deleteEntries": [
+          "b3eaaeb0-dfa3-43be-876a-7b431cde6f2b"
+        ]
+      }
+    ],
+    "missingFields": [
+      {
+        "ledgerId": "YWt906rmuD3NY7nw8suB",
+        "orderId": "MISSING",
+        "type": "RETURN",
+        "missingFields": [
+          "region_id"
+        ],
+        "net_cash": 0
+      }
+    ],
+    "statistics": {
+      "totalLedgerEntries": 23,
+      "totalSaleEntries": 8,
+      "totalReturnEntries": 0,
+      "duplicateSaleOrders": 1,
+      "missingFieldEntries": 1
+    }
+  },
+  "deliveryIssues": {
+    "duplicateDeliveries": [
+      {
+        "orderId": "f68c3ad1-582c-4658-8edf-8a070f9a4364",
+        "orderNumber": "ORD-2025-6066",
+        "deliveries": [
+          {
+            "deliveryId": "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900119343",
+            "status": "assigned",
+            "createdAt": {
+              "type": "firestore/timestamp/1.0",
+              "seconds": 1766900119,
+              "nanoseconds": 344000000
+            }
+          },
+          {
+            "deliveryId": "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900230162",
+            "status": "assigned",
+            "createdAt": {
+              "type": "firestore/timestamp/1.0",
+              "seconds": 1766900230,
+              "nanoseconds": 163000000
+            }
+          }
+        ],
+        "keepDelivery": "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900119343",
+        "deleteDeliveries": [
+          "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900230162"
+        ]
+      }
+    ],
+    "statistics": {
+      "totalDeliveries": 18,
+      "duplicateDeliveryOrders": 1
+    }
+  }
+}

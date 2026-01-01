@@ -11,7 +11,7 @@ import {
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAuthStore, useShopStore, useOrderStore, useDeliveryStore, useRouteStore, useOutstandingPaymentStore } from '../../src/stores';
+import { useAuthStore, useShopStore, useOrderStore, useDeliveryStore, useRouteStore, useOutstandingPaymentStore, useBillStore } from '../../src/stores';
 import { Card, Badge, Skeleton, EmptyState } from '../../src/components';
 import { RoleBasedSplash } from '../../src/components/common/RoleBasedSplash';
 import { colors, typography, spacing, borderRadius, shadows, animations } from '../../src/theme';
@@ -24,6 +24,7 @@ export default function DashboardScreen() {
   const { deliveries, loadDeliveries, getPendingDeliveries, isLoading: deliveriesLoading } = useDeliveryStore();
   const { routes, loadRoutes, getActiveRoute, isLoading: routesLoading } = useRouteStore();
   const { outstandingPayments, loadOutstandingPayments, getOutstandingPaymentsBySalesman } = useOutstandingPaymentStore();
+  const { loadBills, getPendingCreditBills } = useBillStore();
   const [refreshing, setRefreshing] = useState(false);
   const [animatedShops, setAnimatedShops] = useState(0);
   const [animatedOrders, setAnimatedOrders] = useState(0);
@@ -169,6 +170,7 @@ export default function DashboardScreen() {
     if (isSalesman) {
       loadDeliveries();
       loadOutstandingPayments();
+      loadBills();
     }
     if (isBooker) {
       loadRoutes();
@@ -381,25 +383,32 @@ export default function DashboardScreen() {
           </View>
         )}
 
-        {/* Outstanding Payments Stat Card - For Salesmen */}
-        {isSalesman && outstandingPaymentsStats.count > 0 && (
-          <View style={styles.statsRow}>
-            <TouchableOpacity
-              style={[styles.statCard, { backgroundColor: colors.warning }]}
-              onPress={() => router.push('/(tabs)/payments')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.statIcon}>
-                <Ionicons name="cash-outline" size={24} color={colors.warning} />
-              </View>
-              <Text style={styles.statNumber}>{outstandingPaymentsStats.count}</Text>
-              <Text style={styles.statLabel}>Outstanding Payments</Text>
-              <Text style={styles.statSubLabel}>
-                Rs. {outstandingPaymentsStats.totalAmount.toLocaleString()}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* Pending Credit Card - For Salesmen */}
+        {isSalesman && user?.id && (() => {
+          const pendingBills = getPendingCreditBills(user.id);
+          const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.remainingCredit || 0), 0);
+          
+          if (pendingBills.length === 0) return null;
+          
+          return (
+            <View style={styles.statsRow}>
+              <TouchableOpacity
+                style={[styles.statCard, { backgroundColor: colors.warning }]}
+                onPress={() => router.push('/(tabs)/payments')}
+                activeOpacity={0.8}
+              >
+                <View style={styles.statIcon}>
+                  <Ionicons name="cash-outline" size={24} color={colors.warning} />
+                </View>
+                <Text style={styles.statNumber}>{pendingBills.length}</Text>
+                <Text style={styles.statLabel}>Pending Credit Bills</Text>
+                <Text style={styles.statSubLabel}>
+                  {formatPKR(totalPendingAmount)}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
 
         {/* Quick Actions */}
         <Text style={styles.sectionTitle}>Quick Actions</Text>

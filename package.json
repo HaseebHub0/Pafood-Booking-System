@@ -9,7 +9,12 @@
     "web": "expo start --web",
     "lint": "eslint .",
     "reset": "rm -rf node_modules && rm -rf .expo && npm install",
-    "seed:firebase": "node scripts/seedFirebase.js"
+    "seed:firebase": "node scripts/seedFirebase.js",
+    "data:analyze": "npx tsx scripts/data-integrity/analyze-data.ts",
+    "data:cleanup": "npx tsx scripts/data-integrity/cleanup-duplicates.ts",
+    "data:verify": "npx tsx scripts/data-integrity/verify-integrity.ts",
+    "db:cleanup": "npx tsx scripts/cleanup-keep-admin.ts",
+    "db:seed": "npx tsx scripts/seed-comprehensive-test-data.ts"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
@@ -51,8 +56,11 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "@types/react": "~19.1.0",
     "babel-preset-expo": "^54.0.8",
+    "ts-node": "^10.9.1",
+    "tsx": "^4.7.0",
     "typescript": "~5.9.2"
   },
   "private": true

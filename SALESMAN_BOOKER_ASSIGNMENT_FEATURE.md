@@ -56,3 +56,6 @@ This feature allows KPO users to assign bookers to salesmen when creating salesm
 3. Get assigned bookerIds
 4. Filter shops/orders where bookerId in assigned bookerIds OR salesmanId == current salesmanId
 
+
+
+

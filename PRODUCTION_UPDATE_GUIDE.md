@@ -10,7 +10,7 @@ Production app ab automatically updates check karegi aur download karegi.
 2. **Download:** Agar update available hai, to automatically download ho jati hai
 3. **Apply:** Update next app restart par apply ho jati hai
 
-## Important Notes
+## Important No
 
 ### For Production Builds:
 
@@ -46,4 +46,9 @@ Route screen par crash issue fix kar diya hai. Ab route detail screen properly l
 3. `eas update` run karein
 4. App restart karein (or wait for next launch)
 5. Update automatically apply ho jayega!
+
+
+
+
+
 

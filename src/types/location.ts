@@ -19,3 +19,6 @@ export interface BookerLocation extends BaseEntity {
 
 
 
+
+
+

@@ -278,10 +278,34 @@ export const useDeliveryStore = create<DeliveryStore>((set, get) => ({
       return null;
     }
 
-    // Check if delivery already exists
+    // IDEMPOTENCY CHECK: Check local store first
     const existingDelivery = deliveries.find((d) => d.orderId === orderId);
     if (existingDelivery) {
+      console.log('createDeliveryFromOrder: Delivery already exists in local store for orderId:', orderId);
       return existingDelivery;
+    }
+
+    // IDEMPOTENCY CHECK: Query Firebase to ensure no delivery already exists
+    try {
+      const { firestoreService } = await import('../services/firebase');
+      const { COLLECTIONS } = await import('../services/firebase/collections');
+      const { query, where, getDocs } = await import('firebase/firestore');
+      const { db } = await import('../config/firebase');
+      const { collection } = await import('firebase/firestore');
+      
+      const deliveriesRef = collection(db, COLLECTIONS.DELIVERIES);
+      const existingDeliveryQuery = query(deliveriesRef, where('orderId', '==', orderId));
+      const existingDeliverySnapshot = await getDocs(existingDeliveryQuery);
+      
+      if (!existingDeliverySnapshot.empty) {
+        const existingFirebaseDelivery = existingDeliverySnapshot.docs[0].data();
+        console.log('createDeliveryFromOrder: Delivery already exists in Firebase for orderId:', orderId);
+        // Return the existing delivery from Firebase
+        return existingFirebaseDelivery as Delivery;
+      }
+    } catch (firebaseCheckError) {
+      console.warn('createDeliveryFromOrder: Failed to check Firebase for existing delivery:', firebaseCheckError);
+      // Continue with creation if check fails (defensive approach)
     }
 
     const shop = shopStore.getShopById(order.shopId);
@@ -560,16 +584,35 @@ export const useDeliveryStore = create<DeliveryStore>((set, get) => ({
                   });
 
                   // If full cash payment: Record cash entry under salesman, no credit entry
+                  // IDEMPOTENCY: createLedgerEntryOnDelivery already checks for existing entries, but add explicit check here too
                   if (paymentStatus === 'PAID') {
                     try {
-                      const { createLedgerEntryOnDelivery } = await import('../services/ledgerService');
-                      await createLedgerEntryOnDelivery(
-                        order,
-                        currentUser.id,
-                        shop.shopName,
-                        shop.branch
+                      // IDEMPOTENCY CHECK: Verify no SALE_DELIVERED entry already exists for this order
+                      const { query, where, getDocs } = await import('firebase/firestore');
+                      const { db } = await import('../config/firebase');
+                      const { collection } = await import('firebase/firestore');
+                      const { COLLECTIONS } = await import('../services/firebase/collections');
+                      
+                      const ledgerRef = collection(db, COLLECTIONS.LEDGER_TRANSACTIONS);
+                      const existingEntryQuery = query(
+                        ledgerRef,
+                        where('order_id', '==', order.id),
+                        where('type', '==', 'SALE_DELIVERED')
                       );
-                      console.log('SALE_DELIVERED ledger entry created for full payment:', order.orderNumber);
+                      const existingEntrySnapshot = await getDocs(existingEntryQuery);
+                      
+                      if (!existingEntrySnapshot.empty) {
+                        console.log('markDelivered: SALE_DELIVERED entry already exists for orderId:', order.id, '- skipping creation');
+                      } else {
+                        const { createLedgerEntryOnDelivery } = await import('../services/ledgerService');
+                        await createLedgerEntryOnDelivery(
+                          order,
+                          currentUser.id,
+                          shop.shopName,
+                          shop.branch
+                        );
+                        console.log('SALE_DELIVERED ledger entry created for full payment:', order.orderNumber);
+                      }
                     } catch (ledgerError) {
                       console.error('Failed to create SALE_DELIVERED ledger entry:', ledgerError);
                     }

@@ -1,0 +1,50 @@
+{
+  "timestamp": "2025-12-31T17:02:04.313Z",
+  "dryRun": true,
+  "operations": [
+    {
+      "timestamp": "2025-12-31T17:02:04.310Z",
+      "operation": "keep",
+      "collection": "ledger_transactions",
+      "documentId": "0a432c49-565d-4443-a9ab-e4daf7a38bd2",
+      "orderId": "cdf6a345-42c4-4c2a-923d-6680e0328f38",
+      "reason": "Earliest SALE entry for order cdf6a345-42c4-4c2a-923d-6680e0328f38",
+      "net_cash": 2520.4,
+      "dryRun": true
+    },
+    {
+      "timestamp": "2025-12-31T17:02:04.310Z",
+      "operation": "delete",
+      "collection": "ledger_transactions",
+      "documentId": "b3eaaeb0-dfa3-43be-876a-7b431cde6f2b",
+      "orderId": "cdf6a345-42c4-4c2a-923d-6680e0328f38",
+      "reason": "Duplicate SALE entry (later than earliest) for order cdf6a345-42c4-4c2a-923d-6680e0328f38",
+      "net_cash": 2520.4,
+      "dryRun": true
+    },
+    {
+      "timestamp": "2025-12-31T17:02:04.312Z",
+      "operation": "keep",
+      "collection": "deliveries",
+      "documentId": "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900119343",
+      "orderId": "f68c3ad1-582c-4658-8edf-8a070f9a4364",
+      "reason": "Earliest delivery for order f68c3ad1-582c-4658-8edf-8a070f9a4364",
+      "dryRun": true
+    },
+    {
+      "timestamp": "2025-12-31T17:02:04.312Z",
+      "operation": "delete",
+      "collection": "deliveries",
+      "documentId": "delivery_f68c3ad1-582c-4658-8edf-8a070f9a4364_1766900230162",
+      "orderId": "f68c3ad1-582c-4658-8edf-8a070f9a4364",
+      "reason": "Duplicate delivery for order f68c3ad1-582c-4658-8edf-8a070f9a4364",
+      "dryRun": true
+    }
+  ],
+  "statistics": {
+    "totalDeletions": 2,
+    "totalKept": 2,
+    "ledgerDeletions": 1,
+    "deliveryDeletions": 1
+  }
+}

@@ -19,12 +19,13 @@ import { Card, Button, CreditBadge, TransactionRowCompact } from '../../../src/c
 import { colors, typography, spacing, borderRadius, shadows, animations } from '../../../src/theme';
 import { updateBillPaymentStatus } from '../../../src/services/billService';
 import { createCreditCollectedLedgerEntry } from '../../../src/services/ledgerService';
+import { formatPKR } from '../../../src/utils/formatters';
 
 export default function CollectPaymentScreen() {
   const { shopId, billId, orderId } = useLocalSearchParams<{ shopId?: string; billId?: string; orderId?: string }>();
   const { getShopById } = useShopStore();
   const { recordPayment, getShopTransactions, loadTransactions } = useLedgerStore();
-  const { bills, getBillById, loadBills } = useBillStore();
+  const { bills, getBillById, loadBills, getShopBalance } = useBillStore();
   const { updateOutstandingPayment, getOutstandingPaymentByOrderId } = useOutstandingPaymentStore();
   const { user } = useAuthStore();
   
@@ -80,8 +81,10 @@ export default function CollectPaymentScreen() {
   }
 
   // If bill exists, show bill-specific information
-  const currentBalance = bill ? bill.remainingCredit : shop.currentBalance;
-  const maxAmount = bill ? bill.remainingCredit : (shop.currentBalance > 0 ? shop.currentBalance : undefined);
+  // Calculate shop balance from bills (since shop.currentBalance doesn't exist)
+  const shopBalance = shop ? getShopBalance(shop.id) : 0;
+  const currentBalance = bill ? (bill.remainingCredit || 0) : shopBalance;
+  const maxAmount = bill ? (bill.remainingCredit || 0) : (shopBalance > 0 ? shopBalance : undefined);
 
   const handleAmountChange = (text: string) => {
     // Only allow numbers and one decimal point
@@ -111,7 +114,7 @@ export default function CollectPaymentScreen() {
     if (maxAmount && numAmount > maxAmount) {
       Alert.alert(
         'Excess Payment',
-        `Payment of Rs. ${numAmount.toLocaleString()} exceeds the ${bill ? 'remaining credit' : 'outstanding balance'} of Rs. ${maxAmount.toLocaleString()}. The extra amount will be recorded as advance. Continue?`,
+        `Payment of ${formatPKR(numAmount)} exceeds the ${bill ? 'remaining credit' : 'outstanding balance'} of ${formatPKR(maxAmount)}. The extra amount will be recorded as advance. Continue?`,
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Continue', onPress: () => processPayment(numAmount) },
@@ -130,8 +133,10 @@ export default function CollectPaymentScreen() {
       // If this is a bill-based collection, update bill and credit records
       if (bill) {
         // Update bill payment status
-        const newPaidAmount = bill.paidAmount + numAmount;
-        const newRemainingCredit = Math.max(0, bill.totalAmount - newPaidAmount);
+        const billTotalAmount = bill.totalAmount || 0;
+        const billPaidAmount = bill.paidAmount || 0;
+        const newPaidAmount = billPaidAmount + numAmount;
+        const newRemainingCredit = Math.max(0, billTotalAmount - newPaidAmount);
         
         const billUpdated = await updateBillPaymentStatus(bill.id, numAmount);
         
@@ -188,36 +193,106 @@ export default function CollectPaymentScreen() {
 
         Alert.alert(
           'Payment Collected',
-          `Rs. ${numAmount.toLocaleString()} collected successfully from ${shop.shopName}\n\nBill: ${bill.billNumber}\nRemaining Credit: Rs. ${newRemainingCredit.toLocaleString()}`,
+          `${formatPKR(numAmount)} collected successfully from ${shop.shopName}\n\nBill: ${bill.billNumber}\nRemaining Credit: ${formatPKR(newRemainingCredit)}`,
           [
             {
               text: 'OK',
-              onPress: () => router.back(),
+              onPress: () => {
+                // Reload data to reflect changes
+                loadBills();
+                loadTransactions();
+                router.back();
+              },
             },
           ]
         );
       } else {
-        // Regular shop payment collection (non-bill based)
-        const result = await recordPayment({
-          shopId: shop.id,
-          amount: numAmount,
-          notes: notes.trim() || undefined,
-        });
-
-        if (result) {
-          Alert.alert(
-            'Payment Collected',
-            `Rs. ${numAmount.toLocaleString()} collected successfully from ${shop.shopName}`,
-            [
-              {
-                text: 'OK',
-                onPress: () => router.back(),
-              },
-            ]
-          );
-        } else {
-          setError('Failed to record payment. Please try again.');
+        // Shop-based collection: Apply payment to oldest unpaid bill first
+        const shopBills = bills
+          .filter(b => b.shopId === shop.id && b.paymentStatus !== 'PAID' && (b.remainingCredit || 0) > 0)
+          .sort((a, b) => new Date(a.billedAt).getTime() - new Date(b.billedAt).getTime()); // Oldest first
+        
+        if (shopBills.length === 0) {
+          setError('No pending bills found for this shop.');
+          setIsLoading(false);
+          return;
         }
+
+        // Apply payment to oldest bill
+        const oldestBill = shopBills[0];
+        const billTotalAmount = oldestBill.totalAmount || 0;
+        const billPaidAmount = oldestBill.paidAmount || 0;
+        const paymentAmount = Math.min(numAmount, oldestBill.remainingCredit || 0);
+        const newPaidAmount = billPaidAmount + paymentAmount;
+        const newRemainingCredit = Math.max(0, billTotalAmount - newPaidAmount);
+
+        // Update bill payment status
+        const billUpdated = await updateBillPaymentStatus(oldestBill.id, paymentAmount);
+        
+        if (!billUpdated) {
+          setError('Failed to update bill status. Please try again.');
+          setIsLoading(false);
+          return;
+        }
+
+        // Create credit collected ledger entry
+        try {
+          await createCreditCollectedLedgerEntry(
+            oldestBill.orderId,
+            oldestBill.orderNumber,
+            oldestBill.id,
+            oldestBill.billNumber,
+            oldestBill.shopId,
+            oldestBill.shopName,
+            paymentAmount,
+            newRemainingCredit,
+            oldestBill.bookerId,
+            oldestBill.bookerName,
+            user?.id || 'unknown',
+            user?.name,
+            oldestBill.regionId,
+            oldestBill.branch,
+            notes.trim() || `Credit collection - Bill ${oldestBill.billNumber}`
+          );
+        } catch (ledgerError) {
+          console.error('Failed to create credit collected ledger entry:', ledgerError);
+        }
+
+        // Update outstanding payment record if it exists
+        const outstandingPayment = getOutstandingPaymentByOrderId(oldestBill.orderId);
+        if (outstandingPayment) {
+          const newPaymentStatus = newRemainingCredit === 0 ? 'PAID' : 
+                                   newPaidAmount > 0 && newRemainingCredit > 0 ? 'PARTIAL' : 'UNPAID';
+          
+          await updateOutstandingPayment(
+            oldestBill.orderId,
+            newPaidAmount,
+            newRemainingCredit,
+            newPaymentStatus
+          );
+        }
+
+        // If payment amount was less than requested, show info
+        const remainingPayment = numAmount - paymentAmount;
+        const message = remainingPayment > 0
+          ? `${formatPKR(paymentAmount)} applied to bill ${oldestBill.billNumber}. ${formatPKR(remainingPayment)} remaining.`
+          : `${formatPKR(paymentAmount)} collected successfully from ${shop.shopName}\n\nBill: ${oldestBill.billNumber}\nRemaining Credit: ${formatPKR(newRemainingCredit)}`;
+
+        Alert.alert(
+          'Payment Collected',
+          message,
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                // Reload data to reflect changes
+                loadBills();
+                loadTransactions();
+                router.back();
+              },
+            },
+          ]
+        );
       }
     } catch (err) {
       console.error('Payment collection error:', err);
@@ -316,11 +391,11 @@ export default function CollectPaymentScreen() {
                   </View>
                   <View style={styles.billInfoRow}>
                     <Text style={styles.billInfoLabel}>Total Amount:</Text>
-                    <Text style={styles.billInfoValue}>Rs. {bill.totalAmount.toLocaleString()}</Text>
+                    <Text style={styles.billInfoValue}>{formatPKR(bill.totalAmount)}</Text>
                   </View>
                   <View style={styles.billInfoRow}>
                     <Text style={styles.billInfoLabel}>Paid:</Text>
-                    <Text style={[styles.billInfoValue, { color: colors.success }]}>Rs. {bill.paidAmount.toLocaleString()}</Text>
+                    <Text style={[styles.billInfoValue, { color: colors.success }]}>{formatPKR(bill.paidAmount)}</Text>
                   </View>
                 </View>
               )}
@@ -341,7 +416,7 @@ export default function CollectPaymentScreen() {
                       currentBalance < 0 && styles.balanceAdvance,
                     ]}
                   >
-                    Rs. {Math.abs(currentBalance).toLocaleString()}
+                    {formatPKR(Math.abs(currentBalance))}
                   </Text>
                   {currentBalance !== 0 && (
                     <Text style={styles.balanceNote}>
@@ -349,16 +424,7 @@ export default function CollectPaymentScreen() {
                     </Text>
                   )}
                 </View>
-                <View style={styles.balanceDivider} />
-                <View style={styles.balanceItem}>
-                  <View style={styles.balanceIconContainer}>
-                    <Ionicons name="card-outline" size={20} color={colors.secondary[500]} />
-                  </View>
-                  <Text style={styles.balanceLabel}>Credit Limit</Text>
-                  <Text style={styles.balanceValue}>
-                    Rs. {shop.creditLimit.toLocaleString()}
-                  </Text>
-                </View>
+                {/* Credit Limit removed - shop type no longer has this field */}
               </View>
               
               {/* Balance After Payment Preview */}
@@ -374,7 +440,7 @@ export default function CollectPaymentScreen() {
                         balanceAfterPayment === 0 && styles.previewZero,
                       ]}
                     >
-                      Rs. {Math.abs(balanceAfterPayment).toLocaleString()}
+                      {formatPKR(Math.abs(balanceAfterPayment))}
                     </Text>
                   </View>
                   {balanceAfterPayment < 0 && (
@@ -454,7 +520,7 @@ export default function CollectPaymentScreen() {
                             isSelected && styles.quickAmountTextActive,
                           ]}
                         >
-                          {index === 0 && shop.currentBalance > 0
+                          {index === 0 && shopBalance > 0
                             ? 'Full'
                             : `${(quickAmount / 1000).toFixed(0)}k`}
                         </Text>
@@ -511,7 +577,7 @@ export default function CollectPaymentScreen() {
                 <Text style={styles.summaryLabel}>Collecting</Text>
               </View>
               <Text style={styles.summaryValue}>
-                Rs. {(parseFloat(amount) || 0).toLocaleString()}
+                {formatPKR(parseFloat(amount) || 0)}
               </Text>
             </View>
             {amount && parseFloat(amount) > 0 && (
@@ -524,7 +590,7 @@ export default function CollectPaymentScreen() {
                     balanceAfterPayment < 0 && styles.summarySubAdvance,
                   ]}
                 >
-                  Rs. {Math.abs(balanceAfterPayment).toLocaleString()}
+                  {formatPKR(Math.abs(balanceAfterPayment))}
                 </Text>
               </View>
             )}

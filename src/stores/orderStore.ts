@@ -565,7 +565,21 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
       }
     }
 
+    // SAFETY: Validate that currentOrder has an ID before checking for existing order
+    if (!currentOrder.id) {
+      console.error('submitOrder: currentOrder.id is missing - cannot determine if order exists');
+      return {
+        success: false,
+        requiresConfirmation: false,
+        message: 'Order ID is missing. Please create a new order.',
+      };
+    }
+
     const existingOrderIndex = orders.findIndex((o) => o.id === currentOrder.id);
+    const isExistingOrder = existingOrderIndex >= 0;
+    
+    // SAFETY: Order edits must NEVER trigger delivery/ledger creation - only status transitions do
+    // If this is an existing order (edit), we will ONLY update the order document, never create delivery/ledger
     
     // Ensure regionId is set - use order's regionId, or fallback to booker's regionId
     const finalRegionId = currentOrder.regionId || currentUser?.regionId || '';
@@ -614,8 +628,10 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
       console.warn('Could not load mapping for salesman assignment:', e);
     }
 
+    // SAFETY: For existing orders, preserve the original ID - never regenerate
     const orderToSubmit: Order = {
       ...currentOrder,
+      id: currentOrder.id, // Explicitly preserve ID for existing orders
       items: finalItems, // Use items with recalculated discounts
       ...finalTotals, // Use recalculated totals that include discounts
       unauthorizedDiscount: totalUnauthorized,
@@ -731,72 +747,87 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
       }
 
       // Auto-create delivery and assign to salesman by area
-      // Only create delivery for new orders (not for KPO edits of existing orders)
-      if (existingOrderIndex < 0) {
-      try {
-        const { findSalesmanByArea } = await import('../utils/salesmanAssignment');
-        const shopStore = useShopStore.getState();
-        const shop = shopStore.getShopById(orderToSubmit.shopId);
-
-        if (!shop) {
-          console.warn('submitOrder: Shop not found for delivery creation');
-        } else {
-          // Find salesman by shop's branch (preferred) or area (fallback)
-          const shopBranch = shop.branch || currentUser?.branch;
-          const shopArea = shop.area || currentUser?.area;
-          const salesmanAssignment = await findSalesmanByArea(
-            shopBranch,
-            shopArea,
-            finalRegionId
-          );
-
-          if (salesmanAssignment) {
-            // Create delivery directly in Firebase
-            const deliveryData = {
-              id: `delivery_${orderToSubmit.id}_${Date.now()}`,
-              orderId: orderToSubmit.id,
-              orderNumber: orderToSubmit.orderNumber,
-              shopId: shop.id,
-              shopName: shop.shopName,
-              shopAddress: shop.address || '',
-              shopPhone: shop.phone || '',
-              regionId: finalRegionId,
-              salesmanId: salesmanAssignment.salesmanId,
-              salesmanName: salesmanAssignment.salesmanName,
-              assignedAt: new Date().toISOString(),
-              assignedBy: currentUser?.id || 'system',
-              status: 'assigned',
-              items: orderToSubmit.items.map((item) => ({
-                productId: item.productId,
-                productName: item.productName,
-                quantity: item.quantity,
-                deliveredQuantity: 0,
-                unit: item.unit || 'Pcs',
-                unitPrice: item.unitPrice,
-              })),
-              totalAmount: orderToSubmit.grandTotal,
-              deliveredAmount: 0,
-              paymentCollected: false,
-              invoiceGenerated: false,
-              invoiceSigned: false,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              syncStatus: 'synced',
-            };
-
-            await firestoreService.setDoc(COLLECTIONS.DELIVERIES, deliveryData);
-            console.log('Delivery created and assigned to salesman:', salesmanAssignment.salesmanName);
+      // SAFETY: Only create delivery for NEW orders (not for edits of existing orders)
+      // Order edits must NEVER trigger delivery creation - only status transitions do
+      if (!isExistingOrder) {
+        try {
+          // IDEMPOTENCY CHECK: Query Firebase to ensure no delivery already exists for this orderId
+          const { query, where, getDocs } = await import('firebase/firestore');
+          const { db } = await import('../config/firebase');
+          const { collection } = await import('firebase/firestore');
+          
+          const deliveriesRef = collection(db, COLLECTIONS.DELIVERIES);
+          const existingDeliveryQuery = query(deliveriesRef, where('orderId', '==', orderToSubmit.id));
+          const existingDeliverySnapshot = await getDocs(existingDeliveryQuery);
+          
+          if (!existingDeliverySnapshot.empty) {
+            console.warn('submitOrder: Delivery already exists for orderId:', orderToSubmit.id, '- skipping creation');
           } else {
-            console.warn('submitOrder: No salesman found for area, delivery not created. KPO can assign manually.');
+            const { findSalesmanByArea } = await import('../utils/salesmanAssignment');
+            const shopStore = useShopStore.getState();
+            const shop = shopStore.getShopById(orderToSubmit.shopId);
+
+            if (!shop) {
+              console.warn('submitOrder: Shop not found for delivery creation');
+            } else {
+              // Find salesman by shop's branch (preferred) or area (fallback)
+              const shopBranch = shop.branch || currentUser?.branch;
+              const shopArea = shop.area || currentUser?.area;
+              const salesmanAssignment = await findSalesmanByArea(
+                shopBranch,
+                shopArea,
+                finalRegionId
+              );
+
+              if (salesmanAssignment) {
+                // Create delivery directly in Firebase
+                const deliveryData = {
+                  id: `delivery_${orderToSubmit.id}_${Date.now()}`,
+                  orderId: orderToSubmit.id,
+                  orderNumber: orderToSubmit.orderNumber,
+                  shopId: shop.id,
+                  shopName: shop.shopName,
+                  shopAddress: shop.address || '',
+                  shopPhone: shop.phone || '',
+                  regionId: finalRegionId,
+                  salesmanId: salesmanAssignment.salesmanId,
+                  salesmanName: salesmanAssignment.salesmanName,
+                  assignedAt: new Date().toISOString(),
+                  assignedBy: currentUser?.id || 'system',
+                  status: 'assigned',
+                  items: orderToSubmit.items.map((item) => ({
+                    productId: item.productId,
+                    productName: item.productName,
+                    quantity: item.quantity,
+                    deliveredQuantity: 0,
+                    unit: item.unit || 'Pcs',
+                    unitPrice: item.unitPrice,
+                  })),
+                  totalAmount: orderToSubmit.grandTotal,
+                  deliveredAmount: 0,
+                  paymentCollected: false,
+                  invoiceGenerated: false,
+                  invoiceSigned: false,
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                  syncStatus: 'synced',
+                };
+
+                await firestoreService.setDoc(COLLECTIONS.DELIVERIES, deliveryData);
+                console.log('Delivery created and assigned to salesman:', salesmanAssignment.salesmanName);
+              } else {
+                console.warn('submitOrder: No salesman found for area, delivery not created. KPO can assign manually.');
+              }
+            }
           }
-        }
-      } catch (deliveryError) {
-        console.error('Failed to create delivery automatically:', deliveryError);
-        // Don't fail order submission if delivery creation fails
+        } catch (deliveryError) {
+          console.error('Failed to create delivery automatically:', deliveryError);
+          // Don't fail order submission if delivery creation fails
         }
       } else {
-        // Order was updated (existing order) - update existing delivery if it exists
-        console.log('submitOrder: Order updated (existing order). Updating existing delivery if present.');
+        // SAFETY: Order was updated (existing order) - ONLY update existing delivery if it exists
+        // NEVER create a new delivery for edited orders - delivery creation only happens on status transitions
+        console.log('submitOrder: Order updated (existing order). Updating existing delivery if present - NEVER creating new delivery.');
         try {
           const { firestoreService } = await import('../services/firebase');
           const { COLLECTIONS } = await import('../services/firebase/collections');
@@ -850,7 +881,7 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
               }
             }
           } else {
-            console.log('No existing delivery found for edited order, skipping delivery update.');
+            console.log('No existing delivery found for edited order - this is expected if order has not been dispatched yet.');
           }
         } catch (deliveryUpdateError) {
           console.error('Failed to update delivery for edited order:', deliveryUpdateError);
