@@ -107,13 +107,26 @@ export default function RootLayout() {
       }
     }
 
-    // Initialize Firebase
-    initializeFirebase().catch((error) => {
-      console.error('Firebase initialization error:', error);
-    });
-    
-    // Check auth status
-    checkAuth();
+    // Initialize Firebase first, then check auth
+    const initApp = async () => {
+      try {
+        // Initialize Firebase and ensure network is enabled
+        await initializeFirebase();
+        console.log('[App] Firebase initialized, checking auth...');
+        
+        // Wait a bit more to ensure network is fully ready
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Now check auth status
+        await checkAuth();
+      } catch (error) {
+        console.error('[App] Initialization error:', error);
+        // Still try to check auth even if Firebase init fails
+        await checkAuth();
+      }
+    };
+
+    initApp();
 
     // Setup network monitoring (only on native platforms)
     let networkCheckInterval: ReturnType<typeof setInterval> | null = null;

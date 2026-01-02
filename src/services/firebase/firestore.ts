@@ -321,12 +321,9 @@ class FirestoreService {
    * Ensure Firestore network is enabled
    */
   private async ensureNetworkEnabled(): Promise<void> {
-    if (this.networkInitialized) {
-      return; // Already initialized, skip to avoid blocking
-    }
-
+    // Always try to enable network, especially on mobile after app restart
+    // Don't rely on flag alone as it may be stale after OTA updates
     try {
-      // Just enable network, don't disable first (causes blocking)
       await enableNetwork(db);
       this.networkInitialized = true;
       console.log('[Firestore] Network enabled');
@@ -337,8 +334,9 @@ class FirestoreService {
         console.log('[Firestore] Network already enabled');
       } else {
         console.warn('[Firestore] Network enable warning:', error.message);
-        // Still mark as initialized to avoid infinite loops
-        this.networkInitialized = true;
+        // Don't mark as initialized if there's an actual error
+        // This allows retry on next call
+        this.networkInitialized = false;
       }
     }
   }
@@ -370,12 +368,36 @@ class FirestoreService {
                               errorMsg.includes('c050') ||
                               errorMsg.includes('INTERNAL ASSERTION FAILED');
         
-        // If it's an internal error, use regular getDoc directly (don't log)
-        // If it's a network error, log and fallback
-        if (!isInternalError) {
-        console.log('[Firestore] getDocFromServer failed, trying regular getDoc:', serverError.message);
+        // Check if it's an offline error
+        const isOfflineError = errorMsg.includes('offline') || 
+                              errorMsg.includes('Failed to get document') ||
+                              errorMsg.includes('client is offline') ||
+                              serverError?.code === 'unavailable';
+        
+        // If it's an offline error, reset network and retry
+        if (isOfflineError) {
+          console.log('[Firestore] Offline error in getDocFromServer, resetting network...');
+          // Reset network state and retry
+          this.networkInitialized = false;
+          try {
+            await disableNetwork(db);
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await enableNetwork(db);
+            this.networkInitialized = true;
+            console.log('[Firestore] Network reset successful');
+          } catch (networkError: any) {
+            console.warn('[Firestore] Network reset warning:', networkError.message);
+            this.networkInitialized = true; // Mark as initialized to allow fallback
+          }
+          // Retry with regular getDoc after network reset
+          docSnap = await getDoc(docRef);
+        } else if (!isInternalError) {
+          console.log('[Firestore] getDocFromServer failed, trying regular getDoc:', serverError.message);
+          docSnap = await getDoc(docRef);
+        } else {
+          // Internal error - use regular getDoc silently
+          docSnap = await getDoc(docRef);
         }
-        docSnap = await getDoc(docRef);
       }
       
       if (!docSnap.exists()) {
@@ -393,14 +415,26 @@ class FirestoreService {
                             error.code === 'unavailable';
       
       if (isOfflineError) {
-        console.log('[Firestore] Offline error detected, enabling network and retrying...');
+        console.log('[Firestore] Offline error detected, resetting network and retrying...');
         try {
+          // Reset network state
           this.networkInitialized = false;
-          await this.ensureNetworkEnabled();
+          try {
+            await disableNetwork(db);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            await enableNetwork(db);
+            this.networkInitialized = true;
+            console.log('[Firestore] Network reset successful, retrying...');
+          } catch (networkError: any) {
+            console.warn('[Firestore] Network reset warning:', networkError.message);
+            this.networkInitialized = true; // Mark as initialized to allow fallback
+          }
+          
+          // Wait a bit more for network to stabilize
+          await new Promise(resolve => setTimeout(resolve, 200));
           
           // Retry with regular getDoc (avoid getDocFromServer if watch stream is corrupted)
           const docRef = doc(db, collectionName, docId);
-          // Use regular getDoc instead of getDocFromServer to avoid watch stream conflicts
           const docSnap = await getDoc(docRef);
           
           if (!docSnap.exists()) {
