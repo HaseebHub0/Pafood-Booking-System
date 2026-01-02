@@ -109,6 +109,9 @@ class QueryManager {
     queryFn: () => Promise<T>
   ): Promise<T> {
     const key = this.getQueryKey(collection, constraints);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:106',message:'executeQuery called',data:{collection,constraintsCount:constraints.length,key,circuitBreakerOpen:this.circuitBreakerOpen,activeQueriesCount:this.activeQueries.size,isProcessingCount:this.isProcessing.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
     
     // Check circuit breaker - if open, wait for recovery timeout
     if (this.circuitBreakerOpen) {
@@ -323,11 +326,20 @@ class FirestoreService {
   private async ensureNetworkEnabled(): Promise<void> {
     // Always try to enable network, especially on mobile after app restart
     // Don't rely on flag alone as it may be stale after OTA updates
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:323',message:'ensureNetworkEnabled called',data:{networkInitialized:this.networkInitialized},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     try {
       await enableNetwork(db);
       this.networkInitialized = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:329',message:'Network enabled successfully',data:{networkInitialized:this.networkInitialized},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       console.log('[Firestore] Network enabled');
     } catch (error: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:333',message:'Network enable error',data:{errorCode:error?.code,errorMessage:error?.message?.substring(0,200),isFailedPrecondition:error?.code==='failed-precondition',networkInitialized:this.networkInitialized},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       // If already enabled (failed-precondition), that's fine
       if (error.code === 'failed-precondition') {
         this.networkInitialized = true;
@@ -346,6 +358,9 @@ class FirestoreService {
    * Uses getDocFromServer to force network request and avoid offline cache issues
    */
   async getDoc<T extends { [key: string]: any }>(collectionName: CollectionName, docId: string): Promise<T | null> {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:357',message:'getDoc called',data:{collectionName,docId,networkInitialized:this.networkInitialized,circuitBreakerOpen:this.queryManager['circuitBreakerOpen']},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D,E'})}).catch(()=>{});
+    // #endregion
     try {
       // Ensure network is enabled before making requests
       await this.ensureNetworkEnabled();
@@ -459,16 +474,25 @@ class FirestoreService {
     collectionName: CollectionName,
     constraints: QueryConstraint[] = []
   ): Promise<T[]> {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:424',message:'getDocs called',data:{collectionName,constraintsCount:constraints.length,networkInitialized:this.networkInitialized,circuitBreakerOpen:this.queryManager['circuitBreakerOpen']},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D,E'})}).catch(()=>{});
+    // #endregion
     await this.ensureNetworkEnabled();
     
     return this.queryManager.executeQuery(
       collectionName,
       constraints,
       async () => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:433',message:'getDocs queryFn executing',data:{collectionName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D,E'})}).catch(()=>{});
+        // #endregion
         return this.handleFirestoreError(async () => {
       const collectionRef = collection(db, collectionName);
       const q = query(collectionRef, ...constraints);
       const querySnapshot = await getDocs(q);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/firestore.ts:439',message:'getDocs query completed',data:{collectionName,docCount:querySnapshot.docs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D,E'})}).catch(()=>{});
+      // #endregion
       
       return querySnapshot.docs.map((doc) =>
         convertFirestoreDoc<T>(doc.data(), doc.id)

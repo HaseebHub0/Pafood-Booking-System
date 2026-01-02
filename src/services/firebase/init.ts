@@ -101,9 +101,18 @@ export async function initializeFirebase(): Promise<void> {
 
     // Ensure Firestore network is enabled
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/init.ts:103',message:'About to enable network',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       await enableNetwork(db);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/init.ts:106',message:'Network enabled successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       console.log('[Firebase] Firestore network enabled');
     } catch (error: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/services/firebase/init.ts:110',message:'Network enable error',data:{errorCode:error?.code,errorMessage:error?.message?.substring(0,200),isFailedPrecondition:error?.code==='failed-precondition'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       // If already enabled, that's fine
       if (error.code !== 'failed-precondition') {
         console.warn('[Firebase] Network enable warning:', error.message);

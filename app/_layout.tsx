@@ -109,27 +109,54 @@ export default function RootLayout() {
 
     // Initialize Firebase first, then check auth
     const initApp = async () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:111',message:'initApp started',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+      // #endregion
       try {
         // Initialize Firebase and ensure network is enabled
         try {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:115',message:'About to call initializeFirebase',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           await initializeFirebase();
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:118',message:'initializeFirebase completed successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           console.log('[App] Firebase initialized, checking auth...');
           
           // Wait a bit more to ensure network is fully ready
           await new Promise(resolve => setTimeout(resolve, 300));
         } catch (firebaseError) {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:123',message:'Firebase initialization error caught',data:{errorMessage:firebaseError?.message?.substring(0,200),errorStack:firebaseError?.stack?.substring(0,300)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           console.error('[App] Firebase initialization error:', firebaseError);
           // Continue even if Firebase init fails - app should still work
         }
         
         // Now check auth status (with error handling)
         try {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:130',message:'About to call checkAuth',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
           await checkAuth();
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:133',message:'checkAuth completed successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
         } catch (authError) {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:136',message:'Auth check error caught',data:{errorMessage:authError?.message?.substring(0,200),errorStack:authError?.stack?.substring(0,300)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
           console.error('[App] Auth check error:', authError);
           // Don't crash app if auth check fails
         }
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:141',message:'initApp completed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+        // #endregion
       } catch (error) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:144',message:'Unexpected initialization error',data:{errorMessage:error?.message?.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+        // #endregion
         console.error('[App] Unexpected initialization error:', error);
         // Ensure app doesn't crash - try to continue
       }
