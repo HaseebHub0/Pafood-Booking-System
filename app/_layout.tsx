@@ -111,22 +111,35 @@ export default function RootLayout() {
     const initApp = async () => {
       try {
         // Initialize Firebase and ensure network is enabled
-        await initializeFirebase();
-        console.log('[App] Firebase initialized, checking auth...');
+        try {
+          await initializeFirebase();
+          console.log('[App] Firebase initialized, checking auth...');
+          
+          // Wait a bit more to ensure network is fully ready
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } catch (firebaseError) {
+          console.error('[App] Firebase initialization error:', firebaseError);
+          // Continue even if Firebase init fails - app should still work
+        }
         
-        // Wait a bit more to ensure network is fully ready
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Now check auth status
-        await checkAuth();
+        // Now check auth status (with error handling)
+        try {
+          await checkAuth();
+        } catch (authError) {
+          console.error('[App] Auth check error:', authError);
+          // Don't crash app if auth check fails
+        }
       } catch (error) {
-        console.error('[App] Initialization error:', error);
-        // Still try to check auth even if Firebase init fails
-        await checkAuth();
+        console.error('[App] Unexpected initialization error:', error);
+        // Ensure app doesn't crash - try to continue
       }
     };
 
-    initApp();
+    // Don't await - let it run in background to avoid blocking
+    initApp().catch((error) => {
+      console.error('[App] Fatal initialization error:', error);
+      // Last resort - don't let app crash
+    });
 
     // Setup network monitoring (only on native platforms)
     let networkCheckInterval: ReturnType<typeof setInterval> | null = null;

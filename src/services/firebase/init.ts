@@ -54,24 +54,32 @@ function setupFirestoreErrorHandlers() {
     });
   } else if (Platform.OS !== 'web') {
     // React Native platform
-    const originalHandler = ErrorUtils.getGlobalHandler();
-    ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
-      const isFirestoreInternalError = 
-        error?.message?.includes('INTERNAL ASSERTION FAILED') ||
-        error?.message?.includes('Unexpected state') ||
-        (error?.message && error?.message.includes('ID: ca9'));
-      
-      if (isFirestoreInternalError) {
-        // Suppress warning - error is handled and will recover automatically
-        // Don't call original handler for these errors
-        return;
+    try {
+      const ErrorUtils = (global as any).ErrorUtils;
+      if (ErrorUtils) {
+        const originalHandler = ErrorUtils.getGlobalHandler();
+        ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
+          const isFirestoreInternalError = 
+            error?.message?.includes('INTERNAL ASSERTION FAILED') ||
+            error?.message?.includes('Unexpected state') ||
+            (error?.message && error?.message.includes('ID: ca9'));
+          
+          if (isFirestoreInternalError) {
+            // Suppress warning - error is handled and will recover automatically
+            // Don't call original handler for these errors
+            return;
+          }
+          
+          // Call original handler for other errors
+          if (originalHandler) {
+            originalHandler(error, isFatal);
+          }
+        });
       }
-      
-      // Call original handler for other errors
-      if (originalHandler) {
-        originalHandler(error, isFatal);
-      }
-    });
+    } catch (e) {
+      // ErrorUtils might not be available in all environments
+      console.warn('Could not setup ErrorUtils handler in init.ts:', e);
+    }
   }
 }
 
@@ -84,7 +92,12 @@ export async function initializeFirebase(): Promise<void> {
     console.log('Initializing Firebase...');
     
     // Setup global error handlers first
-    setupFirestoreErrorHandlers();
+    try {
+      setupFirestoreErrorHandlers();
+    } catch (error) {
+      console.warn('[Firebase] Error setting up error handlers:', error);
+      // Continue even if error handlers fail
+    }
 
     // Ensure Firestore network is enabled
     try {
@@ -101,43 +114,62 @@ export async function initializeFirebase(): Promise<void> {
     // Firestore will use memory cache, which is fine for mobile apps
     // Data is persisted via AsyncStorage through our hybrid storage
 
-    // Load sync queue from storage
-    await useSyncStore.getState().loadQueue();
-    const queueCount = useSyncStore.getState().getQueueCount();
-    console.log(`[Sync] Loaded ${queueCount} pending sync items from queue`);
+    // Load sync queue from storage (with error handling)
+    try {
+      await useSyncStore.getState().loadQueue();
+      const queueCount = useSyncStore.getState().getQueueCount();
+      console.log(`[Sync] Loaded ${queueCount} pending sync items from queue`);
+    } catch (error) {
+      console.warn('[Firebase] Error loading sync queue:', error);
+      // Continue even if sync queue load fails
+    }
 
-    // Check network status
-    await hybridStorage.updateNetworkStatus();
-    const isOnline = hybridStorage.getOnlineStatus();
-    useSyncStore.getState().setOnlineStatus(isOnline);
+    // Check network status (with error handling)
+    try {
+      await hybridStorage.updateNetworkStatus();
+      const isOnline = hybridStorage.getOnlineStatus();
+      useSyncStore.getState().setOnlineStatus(isOnline);
+    } catch (error) {
+      console.warn('[Firebase] Error checking network status:', error);
+      // Default to online if check fails
+      useSyncStore.getState().setOnlineStatus(true);
+    }
 
     // Sync pending data to Firebase if online AND user is authenticated
-    const { auth } = await import('../../config/firebase');
-    if (isOnline && auth.currentUser) {
-      console.log('Syncing pending data to Firebase...');
-      try {
-        // Sync via syncStore (handles queue)
-        await useSyncStore.getState().syncPendingItems();
-        // Also sync via hybridStorage (handles syncStatus='pending' items)
-        await syncService.syncPendingToFirebase();
-      } catch (error: any) {
-        // Permission errors are expected if user is not authenticated
-        if (error.code === 'permission-denied') {
-          console.log('Sync skipped: User not authenticated');
-        } else {
-          console.warn('Sync error:', error.message);
+    try {
+      const { auth } = await import('../../config/firebase');
+      const isOnline = useSyncStore.getState().isOnline;
+      
+      if (isOnline && auth.currentUser) {
+        console.log('Syncing pending data to Firebase...');
+        try {
+          // Sync via syncStore (handles queue)
+          await useSyncStore.getState().syncPendingItems();
+          // Also sync via hybridStorage (handles syncStatus='pending' items)
+          await syncService.syncPendingToFirebase();
+        } catch (error: any) {
+          // Permission errors are expected if user is not authenticated
+          if (error.code === 'permission-denied') {
+            console.log('Sync skipped: User not authenticated');
+          } else {
+            console.warn('Sync error:', error.message);
+          }
         }
+      } else if (!auth.currentUser) {
+        console.log('Sync skipped: User not authenticated');
+      } else if (!isOnline) {
+        console.log('Sync skipped: Device is offline');
       }
-    } else if (!auth.currentUser) {
-      console.log('Sync skipped: User not authenticated');
-    } else if (!isOnline) {
-      console.log('Sync skipped: Device is offline');
+    } catch (error) {
+      console.warn('[Firebase] Error during sync check:', error);
+      // Continue even if sync check fails
     }
 
     console.log('Firebase initialized successfully');
   } catch (error) {
     console.error('Error initializing Firebase:', error);
-    throw error;
+    // Don't throw - let app continue even if Firebase init fails partially
+    // This prevents app crashes
   }
 }
 
