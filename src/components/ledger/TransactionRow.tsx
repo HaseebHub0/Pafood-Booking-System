@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius, typography } from '../../theme';
 import { LedgerTransaction, TransactionType } from '../../types/ledger';
+import { createShadowStyle } from '../../utils/shadowUtils';
 
 interface TransactionRowProps {
   transaction: LedgerTransaction;
@@ -242,11 +243,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: borderRadius.lg,
     marginBottom: spacing.sm,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    ...createShadowStyle('#000', { width: 0, height: 1 }, 0.05, 2, 1),
   },
   iconContainer: {
     width: 44,

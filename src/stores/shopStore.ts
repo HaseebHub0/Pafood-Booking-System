@@ -129,30 +129,42 @@ export const useShopStore = create<ShopStore>((set, get) => ({
             );
           } else if (currentUser.role?.toLowerCase() === 'salesman') {
             // Salesman see only shops from assigned bookers
-            try {
-              const { useMappingStore } = await import('./mappingStore');
-              const mappingStore = useMappingStore.getState();
-              await mappingStore.loadMappings();
-              const assignedBookerIds = mappingStore.getBookersForSalesman(currentUser.id);
-              
-              if (assignedBookerIds.length > 0) {
-                filteredShops = migratedShops.filter((shop) => assignedBookerIds.includes(shop.bookerId));
-                console.log(`Filtered shops for salesman: ${filteredShops.length} shops from ${assignedBookerIds.length} assigned bookers`);
-              } else {
-                // No bookers assigned - show no shops
-                filteredShops = [];
-                console.log('No bookers assigned to salesman, showing no shops');
-              }
-            } catch (error) {
-              console.warn('Failed to load mappings for shop filtering, falling back to branch:', error);
-              // Fallback to branch-based filtering
-              filteredShops = migratedShops.filter((shop) => {
-                if (currentUser.branch) {
-                  return shop.branch === currentUser.branch;
+            // Guard: Ensure salesman has an ID before querying mappings
+            if (!currentUser.id || currentUser.id.trim() === '') {
+              console.warn('[ShopStore] Salesman has no ID, cannot filter shops by mappings');
+              filteredShops = [];
+            } else {
+              try {
+                const { useMappingStore } = await import('./mappingStore');
+                const mappingStore = useMappingStore.getState();
+                
+                // Load mappings if not already loaded
+                if (mappingStore.mappings.length === 0 && !mappingStore.isLoading) {
+                  console.log('[ShopStore] Loading mappings for shop filtering');
+                  await mappingStore.loadMappings();
                 }
-                // Fallback to region if branch not available
-                return shop.regionId === currentUser.regionId || shop.city === currentUser.region;
-              });
+                
+                const assignedBookerIds = mappingStore.getBookersForSalesman(currentUser.id);
+                
+                if (assignedBookerIds.length > 0) {
+                  filteredShops = migratedShops.filter((shop) => assignedBookerIds.includes(shop.bookerId));
+                  console.log(`[ShopStore] Filtered shops for salesman: ${filteredShops.length} shops from ${assignedBookerIds.length} assigned bookers`);
+                } else {
+                  // No bookers assigned - show no shops
+                  filteredShops = [];
+                  console.log('[ShopStore] No bookers assigned to salesman, showing no shops');
+                }
+              } catch (error: any) {
+                console.warn('[ShopStore] Failed to load mappings for shop filtering, falling back to branch:', error?.message || error);
+                // Fallback to branch-based filtering
+                filteredShops = migratedShops.filter((shop) => {
+                  if (currentUser.branch) {
+                    return shop.branch === currentUser.branch;
+                  }
+                  // Fallback to region if branch not available
+                  return shop.regionId === currentUser.regionId || shop.city === currentUser.region;
+                });
+              }
             }
           }
           // Admin/Owner sees all (no filtering)

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Booking, Product } from '../types';
 import { dataService } from '../dataService';
 import { formatCurrency } from '../utils/dateUtils';
+import { printBill, printLoadForm } from '../utils/billPDF';
 
 interface KPOBookingsProps {
     user: User;
@@ -217,8 +218,44 @@ const KPOBookings: React.FC<KPOBookingsProps> = ({ user }) => {
                 b.id === bookingId ? { ...b, status: 'billed' } : b
             );
             setBookings(updatedList);
+            
+            // Get the order and shop data for PDF generation
+            const order = updatedList.find(b => b.id === bookingId);
+            if (order) {
+                try {
+                    // Fetch shop data if shopId is available
+                    let shop: any = null;
+                    if (order.shopId) {
+                        try {
+                            const shops = await dataService.getAllShops();
+                            shop = shops.find((s: any) => s.id === order.shopId);
+                        } catch (shopError) {
+                            console.warn('Could not fetch shop data:', shopError);
+                        }
+                    }
+                    
+                    // If shop not found, create a minimal shop object from order data
+                    if (!shop) {
+                        shop = {
+                            shopName: order.shopName || 'N/A',
+                            ownerName: order.ownerName || 'N/A',
+                            address: order.shopAddress || order.address || 'N/A',
+                            phone: order.shopPhone || order.phone || 'N/A'
+                        };
+                    }
+                    
+                    // Automatically generate and print PDF bill
+                    printBill(order, shop);
+                    console.log('PDF bill generated automatically');
+                } catch (pdfError: any) {
+                    console.error('Error generating PDF bill:', pdfError);
+                    // Don't fail the whole operation if PDF generation fails
+                    alert(`Bill Generated for order. PDF generation had an issue: ${pdfError.message}`);
+                }
+            }
+            
             setSelectedBooking(null);
-            alert(`Bill Generated for order. Sent to printing.`);
+            alert(`Bill Generated for order. PDF has been generated automatically.`);
         } catch (error: any) {
             console.error('Error generating bill:', error);
             alert('Failed to generate bill. Please try again.');
@@ -239,32 +276,53 @@ const KPOBookings: React.FC<KPOBookingsProps> = ({ user }) => {
             // Get order, delivery, and load form data for PDF
             const booking = updatedList.find(b => b.id === bookingId);
             if (booking) {
-                // Create a mock load form structure from order items
-                const loadForm = {
-                    id: `LF-${bookingId}`,
-                    loadFormNumber: `LF-${booking.orderNumber || bookingId}`,
-                    items: (booking.items || []).map((item: any) => ({
-                        productName: item.productName || item.productNameEn || 'N/A',
-                        quantity: item.quantity || 0,
-                        unit: item.unit || 'Pcs'
-                    })),
-                    notes: ''
-                };
-                
-                // Create a mock delivery structure
-                const delivery = {
-                    id: `DEL-${bookingId}`,
-                    salesmanName: booking.salesmanName || 'N/A',
-                    salesmanPhone: booking.salesmanPhone || 'N/A',
-                    shopAddress: booking.shopAddress || 'N/A',
-                    createdAt: booking.createdAt || new Date().toISOString()
-                };
-                
-                // Generate and print PDF load form
-                printLoadForm(loadForm, delivery, booking);
+                try {
+                    // Create a load form structure from order items
+                    const loadForm = {
+                        id: `LF-${bookingId}`,
+                        loadFormNumber: `LF-${booking.orderNumber || bookingId}`,
+                        items: (booking.items || []).map((item: any) => ({
+                            productName: item.productName || item.productNameEn || 'N/A',
+                            quantity: item.quantity || 0,
+                            unit: item.unit || 'Pcs'
+                        })),
+                        notes: booking.notes || ''
+                    };
+                    
+                    // Create delivery structure with shop address
+                    let shopAddress = booking.shopAddress || 'N/A';
+                    if (booking.shopId && !shopAddress) {
+                        try {
+                            const shops = await dataService.getAllShops();
+                            const shop = shops.find((s: any) => s.id === booking.shopId);
+                            if (shop) {
+                                shopAddress = shop.address || 'N/A';
+                            }
+                        } catch (shopError) {
+                            console.warn('Could not fetch shop address:', shopError);
+                        }
+                    }
+                    
+                    const delivery = {
+                        id: `DEL-${bookingId}`,
+                        salesmanName: booking.salesmanName || 'N/A',
+                        salesmanPhone: booking.salesmanPhone || 'N/A',
+                        shopAddress: shopAddress,
+                        createdAt: booking.createdAt || new Date().toISOString()
+                    };
+                    
+                    // Automatically generate and print PDF load form
+                    printLoadForm(loadForm, delivery, booking);
+                    console.log('PDF load form generated automatically');
+                } catch (pdfError: any) {
+                    console.error('Error generating PDF load form:', pdfError);
+                    // Don't fail the whole operation if PDF generation fails
+                    alert(`Load form generated. PDF generation had an issue: ${pdfError.message}`);
+                }
             }
             
             setSelectedBooking(null);
+            alert(`Load Form Generated. PDF has been generated automatically.`);
         } catch (error: any) {
             console.error('Error generating load form:', error);
             alert('Failed to generate load form. Please try again.');

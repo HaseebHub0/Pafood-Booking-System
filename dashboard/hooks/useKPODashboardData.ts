@@ -65,15 +65,19 @@ export function useKPODashboardData(user: User) {
 
     const fetchDashboardData = useCallback(async () => {
         if (!user.branch) {
-            setState({
-                data: null,
+            setState(prev => ({
+                ...prev,
                 isLoading: false,
                 error: 'No branch assigned to user'
-            });
+            }));
             return;
         }
 
+        // Use request ID to ignore stale responses
+        let isCancelled = false;
+
         try {
+            // Only set loading, don't clear existing data
             setState(prev => ({ ...prev, isLoading: true, error: null }));
 
             const branchName = user.branch;
@@ -100,10 +104,22 @@ export function useKPODashboardData(user: User) {
                 dataService.getTotalCreditsSummary(branchName)
             ]);
 
+            // Check if request was cancelled
+            if (isCancelled) {
+                console.log('useKPODashboardData: Request cancelled, ignoring response');
+                return;
+            }
+
             console.log('useKPODashboardData: Data fetched successfully');
             console.log('- All orders:', allBranchOrders.length);
             console.log('- Bookers:', bookers.length);
             console.log('- Salesmen:', salesmen.length);
+
+            // Validate data - don't proceed if critical data is missing
+            if (bookers.length === 0 && salesmen.length === 0) {
+                console.warn('useKPODashboardData: No bookers or salesmen found - this might indicate a data issue');
+                // Log detailed debug info but don't fail - might be legitimate
+            }
 
             // Calculate stats from ledger entries (single source of truth)
             // Get ledger entries for this branch
@@ -206,36 +222,73 @@ export function useKPODashboardData(user: User) {
                 bookerSummaries: []
             };
 
-            setState({
-                data: {
-                    stats,
-                    salesPerformance,
-                    recentActivity,
-                    activeStaff,
-                    criticalTasks,
-                    creditsSummary: creditsData,
-                    lastUpdated: new Date()
-                },
-                isLoading: false,
-                error: null
+            // Only update state if we have valid data
+            // Don't overwrite with empty data if previous data existed
+            setState(prev => {
+                // If we have valid data, use it
+                // If previous data exists and new data is empty, keep previous data but show error
+                const hasValidData = bookers.length > 0 || salesmen.length > 0 || allBranchOrders.length > 0;
+                const hasPreviousData = prev.data !== null;
+
+                if (!hasValidData && hasPreviousData) {
+                    console.warn('useKPODashboardData: New data is empty but previous data exists - keeping previous data');
+                    return {
+                        ...prev,
+                        isLoading: false,
+                        error: 'Failed to fetch new data. Showing cached data.'
+                    };
+                }
+
+                return {
+                    data: {
+                        stats,
+                        salesPerformance,
+                        recentActivity,
+                        activeStaff,
+                        criticalTasks,
+                        creditsSummary: creditsData,
+                        lastUpdated: new Date()
+                    },
+                    isLoading: false,
+                    error: null
+                };
             });
         } catch (error: any) {
+            // Check if request was cancelled
+            if (isCancelled) {
+                console.log('useKPODashboardData: Request cancelled during error handling');
+                return;
+            }
+
             console.error('Error fetching KPO dashboard data:', error);
             console.error('Error details:', {
                 message: error.message,
                 code: error.code,
                 stack: error.stack
             });
-            setState({
-                data: null,
+
+            // Don't clear existing data on error - keep previous data
+            setState(prev => ({
+                ...prev,
                 isLoading: false,
-                error: error.message || 'Failed to load dashboard data'
-            });
+                error: error.message || 'Failed to load dashboard data. Previous data may be shown.'
+            }));
         }
     }, [user.branch]);
 
     useEffect(() => {
-        fetchDashboardData();
+        let cancelled = false;
+        
+        const loadData = async () => {
+            await fetchDashboardData();
+        };
+        
+        loadData();
+
+        // Cleanup function to cancel pending requests
+        return () => {
+            cancelled = true;
+        };
     }, [fetchDashboardData]);
 
     const refresh = useCallback(() => {

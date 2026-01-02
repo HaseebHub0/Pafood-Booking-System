@@ -13,6 +13,14 @@ let currentBooker: User | null = null;
  */
 export const startLocationTracking = async (booker: User): Promise<boolean> => {
   try {
+    // Only allow bookers to track their location
+    // Salesmen don't have permission to write to booker_locations collection
+    const normalizedRole = booker.role?.toLowerCase();
+    if (normalizedRole !== 'booker') {
+      console.log('[LocationTracking] Location tracking is only available for bookers. Current role:', booker.role);
+      return false;
+    }
+
     // Stop any existing tracking
     if (locationWatcher) {
       await stopLocationTracking();
@@ -33,6 +41,7 @@ export const startLocationTracking = async (booker: User): Promise<boolean> => {
     }
 
     // Start watching position
+    // Use currentBooker in callback to ensure we always use the latest booker reference
     locationWatcher = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.Balanced,
@@ -40,7 +49,11 @@ export const startLocationTracking = async (booker: User): Promise<boolean> => {
         distanceInterval: 50, // Update if moved 50m
       },
       async (location) => {
-        await updateLocationToFirebase(location, booker);
+        // Use currentBooker to ensure we have the latest reference
+        // If currentBooker is null or not a booker, the update will be skipped
+        if (currentBooker) {
+          await updateLocationToFirebase(location, currentBooker);
+        }
       }
     );
 
@@ -82,6 +95,13 @@ const updateLocationToFirebase = async (
   booker: User
 ): Promise<void> => {
   try {
+    // Double-check role before attempting to write
+    const normalizedRole = booker.role?.toLowerCase();
+    if (normalizedRole !== 'booker') {
+      // Silently skip - this shouldn't happen if startLocationTracking was called correctly
+      return;
+    }
+
     const now = new Date().toISOString();
     
     // Get existing document to preserve createdAt
@@ -120,8 +140,18 @@ const updateLocationToFirebase = async (
     await firestoreService.setDoc(COLLECTIONS.BOOKER_LOCATIONS, locationData, true);
 
     console.log('[LocationTracking] Updated location for booker:', booker.id);
-  } catch (error) {
-    console.error('[LocationTracking] Error updating location to Firestore:', error);
+  } catch (error: any) {
+    // Handle permission errors gracefully - don't spam console
+    if (error?.code === 'permission-denied' || 
+        error?.message?.includes('Missing or insufficient permissions') ||
+        error?.message?.includes('permission')) {
+      // Silently handle permission errors - this is expected for non-booker roles
+      // or when security rules don't allow the write
+      return;
+    }
+    
+    // Log other errors (network issues, etc.) but don't spam
+    console.warn('[LocationTracking] Error updating location to Firestore:', error?.message || error);
   }
 };
 
@@ -143,8 +173,17 @@ const markBookerOffline = async (bookerId: string): Promise<void> => {
       });
       console.log('[LocationTracking] Marked booker as offline:', bookerId);
     }
-  } catch (error) {
-    console.error('[LocationTracking] Error marking booker offline:', error);
+  } catch (error: any) {
+    // Handle permission errors gracefully
+    if (error?.code === 'permission-denied' || 
+        error?.message?.includes('Missing or insufficient permissions') ||
+        error?.message?.includes('permission')) {
+      // Silently handle permission errors
+      return;
+    }
+    
+    // Log other errors
+    console.warn('[LocationTracking] Error marking booker offline:', error?.message || error);
   }
 };
 

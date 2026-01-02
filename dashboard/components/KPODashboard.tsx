@@ -64,7 +64,8 @@ const KPODashboard: React.FC<KPODashboardProps> = ({ user }) => {
         }
     ] : [];
 
-    if (error) {
+    // Show error but don't hide existing data if available
+    if (error && !data) {
         return (
             <div className="space-y-8">
                 <div className="flex flex-col gap-1">
@@ -73,6 +74,7 @@ const KPODashboard: React.FC<KPODashboardProps> = ({ user }) => {
                 </div>
                 <div className="rounded-xl bg-red-50 p-6 border border-red-200">
                     <p className="text-red-800 font-medium">Error: {error}</p>
+                    <p className="text-red-600 text-sm mt-2">Please check browser console for detailed error information.</p>
                     <button 
                         onClick={refresh}
                         className="mt-4 px-4 py-2 rounded-lg bg-primary text-white font-bold hover:bg-red-700 transition-all"
@@ -86,6 +88,22 @@ const KPODashboard: React.FC<KPODashboardProps> = ({ user }) => {
 
     return (
         <div className="space-y-3 md:space-y-4">
+            {/* Show error banner if error exists but data is available (non-blocking) */}
+            {error && data && (
+                <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-3">
+                    <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-yellow-600 text-sm">warning</span>
+                        <p className="text-yellow-800 text-sm font-medium">{error}</p>
+                        <button 
+                            onClick={refresh}
+                            className="ml-auto text-yellow-700 hover:text-yellow-900 text-sm font-semibold underline"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                </div>
+            )}
+            
             <div className="flex flex-col gap-0.5">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                     <div className="min-w-0 flex-1">

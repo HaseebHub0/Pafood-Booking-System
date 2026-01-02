@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Animated, Easing, Image, ActivityIndicator } fr
 import { Redirect } from 'expo-router';
 import { useAuthStore } from '../src/stores';
 import { colors, typography, spacing } from '../src/theme';
+import { createTextShadowStyle } from '../src/utils/shadowUtils';
 
 export default function SplashScreen() {
   const { isAuthenticated, isLoading } = useAuthStore();
@@ -274,9 +275,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.text.inverse,
     letterSpacing: -1.5,
-    textShadowColor: 'rgba(0, 0, 0, 0.2)',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 4,
+    ...createTextShadowStyle('rgba(0, 0, 0, 0.2)', { width: 0, height: 2 }, 4),
   },
   tagline: {
     ...typography.h4,

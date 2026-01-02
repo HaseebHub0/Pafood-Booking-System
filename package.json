@@ -14,7 +14,10 @@
     "data:cleanup": "npx tsx scripts/data-integrity/cleanup-duplicates.ts",
     "data:verify": "npx tsx scripts/data-integrity/verify-integrity.ts",
     "db:cleanup": "npx tsx scripts/cleanup-keep-admin.ts",
-    "db:seed": "npx tsx scripts/seed-comprehensive-test-data.ts"
+    "db:seed": "npx tsx scripts/seed-comprehensive-test-data.ts",
+    "db:seed:reduced": "npx tsx scripts/seed-reduced-test-data.ts",
+    "db:seed:admin": "npx tsx scripts/seed-admin-user.ts",
+    "validate:dashboard": "npx tsx scripts/validate-dashboard-totals.ts"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",

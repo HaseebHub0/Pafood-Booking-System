@@ -1,9 +1,9 @@
-// Firebase CDN imports (browser environment) - TypeScript doesn't recognize CDN URLs
-// These imports are available at runtime via CDN
-// @ts-ignore: CDN import
+// Use unified Firebase SDK from npm package (v12.6.0) instead of CDN
 import { 
     getDocs, 
     getDoc,
+    getDocFromServer,
+    enableNetwork,
     addDoc, 
     updateDoc, 
     deleteDoc,
@@ -17,10 +17,8 @@ import {
     onSnapshot,
     Timestamp,
     collection
-// @ts-ignore: CDN import
-} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-// @ts-ignore: CDN import
-import { createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+} from 'firebase/firestore';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { db, collections, auth } from './firebase';
 import { User, Region, Branch, Booking, Product, Shop } from './types';
 import { DateRange } from './utils/dateUtils';
@@ -154,8 +152,41 @@ export const dataService = {
      */
     async getUserProfile(uid: string) {
         try {
+            // Ensure network is enabled before fetching
+            try {
+                await enableNetwork(db);
+                console.log('[Dashboard] Network enabled for getUserProfile');
+            } catch (networkError: any) {
+                // If already enabled, that's fine
+                if (networkError.code !== 'failed-precondition') {
+                    console.warn('[Dashboard] Network enable warning:', networkError.message);
+                }
+            }
+
             const userRef = doc(db, 'users', uid);
-            const userSnap = await getDoc(userRef);
+            
+            // Try getDocFromServer first (forces network request)
+            let userSnap;
+            try {
+                userSnap = await getDocFromServer(userRef);
+            } catch (serverError: any) {
+                // Check if it's a Firestore internal assertion error
+                const errorMsg = serverError?.message || '';
+                const isInternalError = serverError?.code === 'b815' || 
+                                      serverError?.code === 'ca9' ||
+                                      serverError?.code === 'c050' ||
+                                      errorMsg.includes('b815') ||
+                                      errorMsg.includes('ca9') ||
+                                      errorMsg.includes('c050') ||
+                                      errorMsg.includes('INTERNAL ASSERTION FAILED');
+                
+                // If it's an internal error, use regular getDoc directly (don't log)
+                // If it's a network error, log and fallback
+                if (!isInternalError) {
+                    console.log('[Dashboard] getDocFromServer failed, trying regular getDoc:', serverError.message);
+                }
+                userSnap = await getDoc(userRef);
+            }
             
             if (userSnap.exists()) {
                 const userData = userSnap.data();
@@ -356,12 +387,40 @@ export const dataService = {
     // Real-time listener for Live Dashboard
     subscribeToActivity(callback: (data: any[]) => void) {
         const q = query(collections.activityLogs, orderBy("timestamp", "desc"), limit(10));
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/dataService.ts:379',message:'subscribeToActivity onSnapshot called',data:{collection:'activityLogs'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+        // #endregion
         return onSnapshot(q, 
             (snapshot) => {
-                const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                callback(logs);
+                try {
+                    const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    callback(logs);
+                } catch (error: any) {
+                    console.error("Firestore Subscription Error (processing):", error.message);
+                    callback([]);
+                }
             },
-            (error) => {
+            (error: any) => {
+                // Handle Firestore internal assertion errors
+                const isInternalError = error.message?.includes('INTERNAL ASSERTION FAILED') ||
+                                        error.message?.includes('Unexpected state') ||
+                                        error.code === 'ca9' ||
+                                        error.code === 'c050' ||
+                                        error.code === 'b815' ||
+                                        (error.message && error.message.includes('ID: ca9')) ||
+                                        (error.message && error.message.includes('ID: c050')) ||
+                                        (error.message && error.message.includes('ID: b815'));
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/dataService.ts:391',message:'subscribeToActivity error callback',data:{isInternalError,errorMessage:error?.message?.substring(0,200),errorCode:error?.code},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+                // #endregion
+                
+                if (isInternalError) {
+                    console.warn("Firestore Internal Assertion Error in activity log listener. This is usually temporary and will recover.");
+                    // Don't throw - let the listener continue
+                    return;
+                }
+                
                 console.error("Firestore Subscription Error:", error.message);
             }
         );
@@ -409,13 +468,22 @@ export const dataService = {
                 return Array.from(regionIds);
             } catch (queryError: any) {
                 console.warn('getActiveRegions: Query failed, trying fallback:', queryError.message);
-                // Fallback: Get all orders and filter
-                const allOrdersSnap = await getDocs(collections.orders);
+                // Fallback: Get delivered orders from last 90 days only (not all orders)
+                const ninetyDaysAgo = new Date();
+                ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+                const startTimestamp = Timestamp.fromDate(ninetyDaysAgo);
+                
+                const fallbackQuery = query(
+                    collections.orders,
+                    where('status', '==', 'delivered'),
+                    where('createdAt', '>=', startTimestamp)
+                );
+                const allOrdersSnap = await getDocs(fallbackQuery);
                 const regionIds = new Set<string>();
                 
                 allOrdersSnap.docs.forEach(doc => {
                     const data = doc.data();
-                    if (data.status === 'delivered' && data.regionId) {
+                    if (data.regionId) {
                         regionIds.add(data.regionId);
                     }
                 });
@@ -452,33 +520,135 @@ export const dataService = {
                 return snapshot.size;
             } catch (queryError: any) {
                 console.warn('getUnauthorizedDiscountsCount: Query failed, trying fallback:', queryError.message);
-                // Fallback: Get all orders with unauthorized discounts and filter in memory
+                // Fallback: Get orders with unauthorized discounts within date range
+                const startTimestamp = Timestamp.fromDate(dateRange.start);
+                const endTimestamp = Timestamp.fromDate(dateRange.end);
+                
                 const allOrdersQuery = query(
                     collections.orders,
-                    where("unauthorizedDiscount", ">", 0)
+                    where("unauthorizedDiscount", ">", 0),
+                    where("createdAt", ">=", startTimestamp),
+                    where("createdAt", "<=", endTimestamp)
                 );
                 const allSnapshot = await getDocs(allOrdersQuery);
                 
-                const startTime = dateRange.start.getTime();
-                const endTime = dateRange.end.getTime();
-                let count = 0;
-                
-                allSnapshot.docs.forEach(doc => {
-                    const data = doc.data();
-                    const orderTime = data.createdAt?.toDate ? data.createdAt.toDate().getTime() : 
-                                     data.createdAt?.seconds ? data.createdAt.seconds * 1000 :
-                                     new Date(data.createdAt || data.date).getTime();
-                    
-                    if (orderTime >= startTime && orderTime <= endTime) {
-                        count++;
-                    }
-                });
-                
-                console.log(`getUnauthorizedDiscountsCount: Fallback found ${count} unauthorized discounts`);
-                return count;
+                console.log(`getUnauthorizedDiscountsCount: Fallback found ${allSnapshot.size} unauthorized discounts`);
+                return allSnapshot.size;
             }
         } catch (error: any) {
             console.error("Firestore Error [getUnauthorizedDiscountsCount]:", error.message);
+            return 0;
+        }
+    },
+
+    /**
+     * Get total amount of unauthorized discounts across all bookers
+     * Groups bookers by name to handle duplicates and filters test shops
+     * @param dateRange - Optional date range. If provided, filters by monthlyUnauthorizedDiscounts for that month.
+     *                    If not provided, returns all-time totalUnauthorizedDiscount.
+     * @returns Total amount in PKR
+     */
+    async getTotalUnauthorizedDiscountsAmount(dateRange?: DateRange): Promise<number> {
+        try {
+            console.log('getTotalUnauthorizedDiscountsAmount: Fetching total unauthorized discount amount', { dateRange });
+            
+            // Import test shop filter
+            const { isTestShop } = await import('./utils/shopFilters');
+            
+            // Get all bookers
+            const allUsers = await this.getAllUsers();
+            const bookerUsers = allUsers.filter(u => u.role?.toLowerCase() === 'booker');
+            
+            console.log(`getTotalUnauthorizedDiscountsAmount: Found ${bookerUsers.length} bookers`);
+            
+            // Get all orders to check for test shops
+            let allOrders: any[] = [];
+            try {
+                const ordersSnapshot = await getDocs(collections.orders);
+                allOrders = ordersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            } catch (ordersError: any) {
+                console.warn('getTotalUnauthorizedDiscountsAmount: Could not fetch orders for test shop filtering:', ordersError.message);
+            }
+            
+            // Determine which month to filter by (if dateRange provided)
+            let targetMonth: string | null = null;
+            if (dateRange) {
+                // Use the start date to determine the month (format: "YYYY-MM")
+                const month = dateRange.start.getMonth() + 1;
+                const year = dateRange.start.getFullYear();
+                targetMonth = `${year}-${String(month).padStart(2, '0')}`;
+                console.log(`getTotalUnauthorizedDiscountsAmount: Filtering by month: ${targetMonth}`);
+            }
+            
+            // Group bookers by name and sum their totals
+            const bookerMap = new Map<string, { total: number; bookerIds: string[] }>();
+            
+            for (const booker of bookerUsers) {
+                try {
+                    // Get booker's discount data from user document
+                    const userRef = doc(db, 'users', booker.id);
+                    const userDoc = await getDoc(userRef);
+                    
+                    if (!userDoc.exists()) {
+                        continue;
+                    }
+                    
+                    const userData = userDoc.data();
+                    
+                    // Get discount amount based on dateRange
+                    let discountAmount = 0;
+                    if (targetMonth && userData.monthlyUnauthorizedDiscounts) {
+                        // Filter by specific month
+                        discountAmount = userData.monthlyUnauthorizedDiscounts[targetMonth] || 0;
+                    } else {
+                        // All-time total
+                        discountAmount = userData.totalUnauthorizedDiscount || 0;
+                    }
+                    
+                    if (discountAmount <= 0) {
+                        continue; // Skip bookers with no unauthorized discounts for this period
+                    }
+                    
+                    // Check if this booker has any orders from test shops
+                    // If all their orders are from test shops, exclude them
+                    const bookerOrders = allOrders.filter(o => o.bookerId === booker.id);
+                    const hasNonTestShopOrders = bookerOrders.length === 0 || 
+                        bookerOrders.some((o: any) => !isTestShop(o.shopName));
+                    
+                    if (!hasNonTestShopOrders && bookerOrders.length > 0) {
+                        console.log(`getTotalUnauthorizedDiscountsAmount: Excluding booker ${booker.name} (only test shop orders)`);
+                        continue; // Skip bookers with only test shop orders
+                    }
+                    
+                    // Group by name to handle duplicates
+                    const bookerName = booker.name || 'Unknown';
+                    const existing = bookerMap.get(bookerName);
+                    
+                    if (existing) {
+                        // Aggregate totals for duplicate names
+                        existing.total += discountAmount;
+                        existing.bookerIds.push(booker.id);
+                    } else {
+                        bookerMap.set(bookerName, {
+                            total: discountAmount,
+                            bookerIds: [booker.id]
+                        });
+                    }
+                } catch (bookerError: any) {
+                    console.warn(`getTotalUnauthorizedDiscountsAmount: Error processing booker ${booker.id}:`, bookerError.message);
+                    continue;
+                }
+            }
+            
+            // Sum all totals
+            const totalAmount = Array.from(bookerMap.values()).reduce((sum, booker) => sum + booker.total, 0);
+            
+            const periodLabel = targetMonth ? `for month ${targetMonth}` : 'all-time';
+            console.log(`getTotalUnauthorizedDiscountsAmount: Total amount ${periodLabel}: Rs. ${totalAmount.toFixed(2)} from ${bookerMap.size} unique booker names`);
+            
+            return totalAmount;
+        } catch (error: any) {
+            console.error("Firestore Error [getTotalUnauthorizedDiscountsAmount]:", error.message);
             return 0;
         }
     },
@@ -603,41 +773,68 @@ export const dataService = {
                     const sales = data.grandTotal || data.totalAmount || 0;
                     const orderRegionId = data.regionId;
                     
+                    // Try multiple methods to get branch
+                    let branchName: string | null = null;
+                    let branchId: string | null = null;
+                    
+                    // METHOD 1: Try to get branch from order's branchId or branch field directly
+                    const orderBranchId = data.branchId;
+                    const orderBranch = data.branch;
+                    
+                    if (orderBranchId) {
+                        // Direct branchId match
+                        const branch = branches.find(b => b.id === orderBranchId);
+                        if (branch) {
+                            branchName = branch.name.trim();
+                            branchId = branch.id;
+                        }
+                    } else if (orderBranch) {
+                        // Try to match branch name from order
+                        const orderBranchTrimmed = orderBranch.trim();
+                        const orderBranchLower = orderBranchTrimmed.toLowerCase();
+                        const normalizedBranchName = branchNameLowerMap[orderBranchLower] || orderBranchTrimmed;
+                        const branchInfo = branchMap[normalizedBranchName];
+                        if (branchInfo) {
+                            branchName = normalizedBranchName;
+                            branchId = branchInfo.id;
+                        }
+                    }
+                    
+                    // METHOD 2: Fallback to booker mapping if order doesn't have branch info
+                    if (!branchName && bookerId) {
+                        branchName = bookerBranchMap[bookerId] || null;
+                        if (branchName) {
+                            const branchInfo = branchMap[branchName];
+                            if (branchInfo) {
+                                branchId = branchInfo.id;
+                            } else {
+                                // Try case-insensitive lookup
+                                const branchNameLower = branchName.toLowerCase();
+                                const normalizedName = branchNameLowerMap[branchNameLower];
+                                if (normalizedName && branchMap[normalizedName]) {
+                                    branchName = normalizedName;
+                                    branchId = branchMap[normalizedName].id;
+                                }
+                            }
+                        }
+                    }
+                    
                     if (index < 5) { // Log first 5 orders for debugging
-                        console.log(`getBranchSalesPerformance: Order ${index + 1} - bookerId: ${bookerId}, regionId: ${orderRegionId}, sales: ${sales}`);
+                        console.log(`getBranchSalesPerformance: Order ${index + 1} - bookerId: ${bookerId}, orderBranchId: ${orderBranchId}, orderBranch: ${orderBranch}, mappedBranch: ${branchName || 'NONE'}`);
                     }
                     
-                    if (!bookerId) {
-                        ordersWithoutBooker++;
-                        if (index < 5) console.log(`getBranchSalesPerformance: Order ${index + 1} has no bookerId`);
-                        return;
-                    }
-                    
-                    // Get branch from booker's user data (already normalized)
-                    const branchName = bookerBranchMap[bookerId];
-                    
-                    if (!branchName) {
-                        ordersWithoutBranch++;
-                        if (index < 5) console.log(`getBranchSalesPerformance: Order ${index + 1} - bookerId ${bookerId} not found in bookerBranchMap`);
-                        return;
-                    }
-                    
-                    // Check if branch exists in branchMap (should exist since we normalized it)
-                    const branchInfo = branchMap[branchName];
-                    if (!branchInfo) {
-                        // Try case-insensitive lookup as fallback
-                        const branchNameLower = branchName.toLowerCase();
-                        const normalizedName = branchNameLowerMap[branchNameLower];
-                        if (normalizedName && branchMap[normalizedName]) {
-                            const branchId = branchMap[normalizedName].id;
-                            branchSales[branchId] = (branchSales[branchId] || 0) + sales;
+                    if (!branchId) {
+                        if (!bookerId) {
+                            ordersWithoutBooker++;
                         } else {
-                            console.warn(`getBranchSalesPerformance: Branch name "${branchName}" from booker not found in branchMap. Available branches:`, Object.keys(branchMap));
+                            ordersWithoutBranch++;
+                        }
+                        if (index < 5) {
+                            console.log(`getBranchSalesPerformance: Order ${index + 1} - Could not map to branch. bookerId: ${bookerId}, orderBranchId: ${orderBranchId}, orderBranch: ${orderBranch}`);
                         }
                         return;
                     }
                     
-                    const branchId = branchInfo.id;
                     branchSales[branchId] = (branchSales[branchId] || 0) + sales;
                     
                     if (index < 5) {
@@ -692,35 +889,58 @@ export const dataService = {
                         const bookerId = data.bookerId;
                         const sales = data.grandTotal || data.totalAmount || 0;
                         
-                        if (!bookerId) {
-                            ordersWithoutBooker++;
-                            return;
+                        // Try multiple methods to get branch (same as main query)
+                        let branchName: string | null = null;
+                        let branchId: string | null = null;
+                        
+                        // METHOD 1: Try to get branch from order's branchId or branch field directly
+                        const orderBranchId = data.branchId;
+                        const orderBranch = data.branch;
+                        
+                        if (orderBranchId) {
+                            const branch = branches.find(b => b.id === orderBranchId);
+                            if (branch) {
+                                branchName = branch.name.trim();
+                                branchId = branch.id;
+                            }
+                        } else if (orderBranch) {
+                            const orderBranchTrimmed = orderBranch.trim();
+                            const orderBranchLower = orderBranchTrimmed.toLowerCase();
+                            const normalizedBranchName = branchNameLowerMap[orderBranchLower] || orderBranchTrimmed;
+                            const branchInfo = branchMap[normalizedBranchName];
+                            if (branchInfo) {
+                                branchName = normalizedBranchName;
+                                branchId = branchInfo.id;
+                            }
                         }
                         
-                        // Get branch from booker's user data (already normalized)
-                        const branchName = bookerBranchMap[bookerId];
-                        
-                        if (!branchName) {
-                            ordersWithoutBranch++;
-                            return;
+                        // METHOD 2: Fallback to booker mapping
+                        if (!branchName && bookerId) {
+                            branchName = bookerBranchMap[bookerId] || null;
+                            if (branchName) {
+                                const branchInfo = branchMap[branchName];
+                                if (branchInfo) {
+                                    branchId = branchInfo.id;
+                                } else {
+                                    const branchNameLower = branchName.toLowerCase();
+                                    const normalizedName = branchNameLowerMap[branchNameLower];
+                                    if (normalizedName && branchMap[normalizedName]) {
+                                        branchName = normalizedName;
+                                        branchId = branchMap[normalizedName].id;
+                                    }
+                                }
+                            }
                         }
                         
-                        // Check if branch exists in branchMap
-                        const branchInfo = branchMap[branchName];
-                        if (!branchInfo) {
-                            // Try case-insensitive lookup as fallback
-                            const branchNameLower = branchName.toLowerCase();
-                            const normalizedName = branchNameLowerMap[branchNameLower];
-                            if (normalizedName && branchMap[normalizedName]) {
-                                const branchId = branchMap[normalizedName].id;
-                                branchSales[branchId] = (branchSales[branchId] || 0) + sales;
+                        if (!branchId) {
+                            if (!bookerId) {
+                                ordersWithoutBooker++;
                             } else {
-                                console.warn(`getBranchSalesPerformance (fallback): Branch name "${branchName}" from booker not found in branchMap`);
+                                ordersWithoutBranch++;
                             }
                             return;
                         }
                         
-                        const branchId = branchInfo.id;
                         branchSales[branchId] = (branchSales[branchId] || 0) + sales;
                     }
                 });
@@ -747,15 +967,47 @@ export const dataService = {
     /**
      * Get regional sales performance grouped by region (ONLY delivered orders)
      */
-    async getRegionalSalesPerformance(dateRange: DateRange): Promise<Array<{ regionId: string; sales: number }>> {
+    async getRegionalSalesPerformance(dateRange: DateRange): Promise<Array<{ regionId: string; sales: number; branches?: Array<{ branchId: string; branchName: string; sales: number }> }>> {
         try {
-            console.log('getRegionalSalesPerformance: Fetching from ledger entries for date range:', dateRange);
-            // Query ledger_transactions for SALE_DELIVERED and SALE entries
-            // Use Firestore SDK import from your app's configuration (not remote URL)
-            // (Assume the following import at the top of this module, or adjust per project structure:)
-            // import { getDocs, query, where, collection } from "firebase/firestore";
+            console.log('getRegionalSalesPerformance: Fetching regional sales for date range:', dateRange);
             
-            // Query for SALE_DELIVERED
+            // METHOD 1: Branch-based aggregation (ensures all branch sales are included)
+            // Get all regions and their branches, then aggregate sales by branch, then sum by region
+            let regionSalesFromBranches: Record<string, { sales: number; branches: Array<{ branchId: string; branchName: string; sales: number }> }> = {};
+            
+            try {
+                const allRegions = await this.getRegions();
+                console.log(`getRegionalSalesPerformance: Found ${allRegions.length} regions`);
+                
+                // Get branch sales performance for all regions
+                const branchSalesData = await this.getBranchSalesPerformance(dateRange);
+                console.log(`getRegionalSalesPerformance: Found sales for ${branchSalesData.length} branches`);
+                
+                // Group branches by region and sum their sales
+                for (const region of allRegions) {
+                    const regionBranches = await this.getBranches(region.id);
+                    const regionBranchIds = new Set(regionBranches.map(b => b.id));
+                    
+                    // Find all branch sales for this region
+                    const branchesInRegion = branchSalesData.filter(bs => regionBranchIds.has(bs.branchId));
+                    const regionTotal = branchesInRegion.reduce((sum, b) => sum + b.sales, 0);
+                    
+                    if (regionTotal > 0 || branchesInRegion.length > 0) {
+                        regionSalesFromBranches[region.id] = {
+                            sales: regionTotal,
+                            branches: branchesInRegion
+                        };
+                    }
+                }
+                
+                console.log(`getRegionalSalesPerformance: Branch-based aggregation found sales for ${Object.keys(regionSalesFromBranches).length} regions`);
+            } catch (branchError: any) {
+                console.warn('getRegionalSalesPerformance: Branch-based aggregation failed:', branchError.message);
+                // Continue with direct regionId aggregation
+            }
+            
+            // METHOD 2: Direct regionId aggregation (from ledger/orders with explicit regionId)
+            // Query ledger_transactions for SALE_DELIVERED and SALE entries
             const saleDeliveredQuery = query(
                 collection(db, 'ledger_transactions'),
                 where('type', '==', 'SALE_DELIVERED')
@@ -786,20 +1038,32 @@ export const dataService = {
                 return entryDate >= startTime && entryDate <= endTime;
             });
             
+            // Filter test shops from ledger entries
+            const { isTestShop } = await import('./utils/shopFilters');
+            const entriesBeforeFilter = entries.length;
+            entries = entries.filter(entry => {
+                const shopName = entry.shop_name || entry.shopName || entry.shop?.shopName;
+                return !isTestShop(shopName);
+            });
+            if (entriesBeforeFilter > entries.length) {
+                console.log(`getRegionalSalesPerformance: Filtered ${entriesBeforeFilter - entries.length} test shop entries`);
+            }
+            
             // Group by region_id and sum net_cash
-                const regionSales: Record<string, number> = {};
+            const regionSales: Record<string, number> = {};
             entries.forEach(entry => {
                 const regionId = entry.region_id || entry.regionId || '';
-                    if (regionId) {
+                if (regionId) {
                     const netCash = entry.net_cash !== undefined ? entry.net_cash : (entry.amount || 0);
                     const sales = typeof netCash === 'number' ? netCash : parseFloat(netCash) || 0;
-                        regionSales[regionId] = (regionSales[regionId] || 0) + sales;
-                    }
-                });
-                
-            console.log(`getRegionalSalesPerformance: Found sales for ${Object.keys(regionSales).length} regions from ${entries.length} ledger entries`);
+                    regionSales[regionId] = (regionSales[regionId] || 0) + sales;
+                }
+            });
+            
+            console.log(`getRegionalSalesPerformance: Direct regionId aggregation found sales for ${Object.keys(regionSales).length} regions from ${entries.length} ledger entries`);
             
             // ALWAYS check orders as fallback (for migration/compatibility)
+            let fallbackRegionSales: Record<string, number> = {};
             try {
                 const q = query(
                     collections.orders,
@@ -810,7 +1074,7 @@ export const dataService = {
                 
                 const startTime = dateRange.start.getTime();
                 const endTime = dateRange.end.getTime();
-                const ordersInRange = orders.filter(order => {
+                let ordersInRange = orders.filter(order => {
                     const orderTime = order.deliveredAt?.toDate ? order.deliveredAt.toDate().getTime() :
                                      order.deliveredAt?.seconds ? order.deliveredAt.seconds * 1000 :
                                      order.createdAt?.toDate ? order.createdAt.toDate().getTime() :
@@ -819,36 +1083,85 @@ export const dataService = {
                     return orderTime >= startTime && orderTime <= endTime;
                 });
                 
-                const fallbackRegionSales: Record<string, number> = {};
+                // Filter test shops from orders
+                const ordersBeforeFilter = ordersInRange.length;
+                ordersInRange = ordersInRange.filter(order => {
+                    const shopName = order.shopName || order.shop?.shopName;
+                    return !isTestShop(shopName);
+                });
+                if (ordersBeforeFilter > ordersInRange.length) {
+                    console.log(`getRegionalSalesPerformance: Filtered ${ordersBeforeFilter - ordersInRange.length} test shop orders`);
+                }
+                
                 ordersInRange.forEach(order => {
                     const regionId = order.regionId;
                     const sales = order.grandTotal || order.totalAmount || 0;
-                        if (regionId) {
+                    if (regionId) {
                         fallbackRegionSales[regionId] = (fallbackRegionSales[regionId] || 0) + sales;
                     }
                 });
                 
                 console.log(`getRegionalSalesPerformance: Orders fallback - found sales for ${Object.keys(fallbackRegionSales).length} regions from ${ordersInRange.length} orders`);
-                
-                // Use orders data if it has more regions or more total sales
-                const ledgerTotal = Object.values(regionSales).reduce((sum, s) => sum + s, 0);
-                const ordersTotal = Object.values(fallbackRegionSales).reduce((sum, s) => sum + s, 0);
-                if (ordersTotal > ledgerTotal || ledgerTotal === 0) {
-                    console.log(`getRegionalSalesPerformance: Using orders data (${ordersTotal}) instead of ledger (${ledgerTotal})`);
-                    return Object.entries(fallbackRegionSales).map(([regionId, sales]) => ({
-                        regionId,
-                        sales
-                    }));
-                }
             } catch (fallbackError: any) {
                 console.error('getRegionalSalesPerformance Orders Fallback Error:', fallbackError);
-                // Continue with ledger data even if fallback fails
+                // Continue with other methods
             }
             
-                return Object.entries(regionSales).map(([regionId, sales]) => ({
-                    regionId,
-                    sales
-                }));
+            // MERGE: Combine all three methods (branch-based, ledger direct, orders fallback)
+            // Use branch-based aggregation as primary (most accurate), fallback to ledger/orders if branch data is missing
+            const finalRegionSales: Record<string, { sales: number; branches?: Array<{ branchId: string; branchName: string; sales: number }> }> = {};
+            
+            // Get all unique region IDs from all methods
+            const allRegionIds = new Set([
+                ...Object.keys(regionSalesFromBranches),
+                ...Object.keys(regionSales),
+                ...Object.keys(fallbackRegionSales)
+            ]);
+            
+            for (const regionId of allRegionIds) {
+                const branchSales = regionSalesFromBranches[regionId]?.sales || 0;
+                const ledgerSales = regionSales[regionId] || 0;
+                const ordersSales = fallbackRegionSales[regionId] || 0;
+                
+                // Prefer branch-based aggregation as it's most accurate
+                // Only use ledger/orders as fallback if branch data is missing or significantly lower
+                // (which might indicate incomplete branch data)
+                let finalSales = branchSales;
+                let finalBranches = regionSalesFromBranches[regionId]?.branches;
+                
+                // If branch sales is 0 or very low compared to ledger/orders, use the higher value
+                // This handles cases where branch mapping might have failed
+                if (branchSales === 0 || (branchSales < ledgerSales * 0.5 && ledgerSales > 0)) {
+                    // Use ledger if available, otherwise orders
+                    finalSales = ledgerSales > 0 ? ledgerSales : ordersSales;
+                    finalBranches = undefined; // No branch breakdown available from fallback
+                } else if (branchSales > 0) {
+                    // Branch data is primary - use it
+                    finalSales = branchSales;
+                    finalBranches = regionSalesFromBranches[regionId]?.branches;
+                } else {
+                    // No branch data, use ledger or orders
+                    finalSales = ledgerSales > 0 ? ledgerSales : ordersSales;
+                }
+                
+                finalRegionSales[regionId] = {
+                    sales: finalSales,
+                    ...(finalBranches && { branches: finalBranches })
+                };
+            }
+            
+            const totalFromBranches = Object.values(regionSalesFromBranches).reduce((sum, r) => sum + r.sales, 0);
+            const totalFromLedger = Object.values(regionSales).reduce((sum, s) => sum + s, 0);
+            const totalFromOrders = Object.values(fallbackRegionSales).reduce((sum, s) => sum + s, 0);
+            const finalTotal = Object.values(finalRegionSales).reduce((sum, r) => sum + r.sales, 0);
+            
+            console.log(`getRegionalSalesPerformance: Final totals - Branch-based: ${totalFromBranches}, Ledger: ${totalFromLedger}, Orders: ${totalFromOrders}, Final: ${finalTotal}`);
+            
+            return Object.entries(finalRegionSales).map(([regionId, data]) => ({
+                regionId,
+                sales: data.sales,
+                ...(data.branches && { branches: data.branches })
+            }));
         } catch (error: any) {
             console.error("Firestore Error [getRegionalSalesPerformance]:", error.message);
             return [];
@@ -926,8 +1239,18 @@ export const dataService = {
                 const snapshot = await getDocs(q);
                 const productStats: Record<string, { name: string; units: number }> = {};
                 
+                // Import test shop filter
+                const { isTestShop } = await import('./utils/shopFilters');
+                
                 snapshot.docs.forEach(doc => {
                     const data = doc.data();
+                    
+                    // Filter test shops
+                    const shopName = data.shopName || data.shop?.shopName;
+                    if (isTestShop(shopName)) {
+                        return; // Skip test shop orders
+                    }
+                    
                     const items = data.items || [];
                     
                     items.forEach((item: any) => {
@@ -969,8 +1292,18 @@ export const dataService = {
                 const startTime = dateRange.start.getTime();
                 const endTime = dateRange.end.getTime();
                 
+                // Import test shop filter
+                const { isTestShop } = await import('./utils/shopFilters');
+                
                 allSnapshot.docs.forEach(doc => {
                     const data = doc.data();
+                    
+                    // Filter test shops
+                    const shopName = data.shopName || data.shop?.shopName;
+                    if (isTestShop(shopName)) {
+                        return; // Skip test shop orders
+                    }
+                    
                     const orderTime = data.createdAt?.toDate ? data.createdAt.toDate().getTime() : 
                                      data.createdAt?.seconds ? data.createdAt.seconds * 1000 :
                                      new Date(data.createdAt || data.date).getTime();
@@ -1268,10 +1601,18 @@ export const dataService = {
                 console.log(`getKPOPerformance: Fallback found ${kpoUsers.length} KPOs`);
             }
             
-            // Get all orders for calculation
-            const allOrdersSnap = await getDocs(collections.orders);
+            // Get orders from last 90 days only (not all orders) to reduce reads
+            const ninetyDaysAgo = new Date();
+            ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+            const startTimestamp = Timestamp.fromDate(ninetyDaysAgo);
+            
+            const recentOrdersQuery = query(
+                collections.orders,
+                where('createdAt', '>=', startTimestamp)
+            );
+            const allOrdersSnap = await getDocs(recentOrdersQuery);
             const allOrders = allOrdersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            console.log(`getKPOPerformance: Total orders in system: ${allOrders.length}`);
+            console.log(`getKPOPerformance: Total orders in last 90 days: ${allOrders.length}`);
             
             // Get orders for each KPO's branch
             const kpoPerformance = await Promise.all(
@@ -1414,74 +1755,188 @@ export const dataService = {
     },
 
     /**
+     * Helper function to get users by branch and role with case-insensitive role matching
+     * Tries optimized Firestore queries first, falls back to loading all users if needed
+     * Handles both 'branch' and 'branchId' fields
+     */
+    async getUsersByBranchAndRole(branchName: string, roleName: string): Promise<{ users: any[]; error?: string; debugInfo?: any }> {
+        const roleVariations = [roleName, roleName.toLowerCase(), roleName.toUpperCase(), roleName.charAt(0).toUpperCase() + roleName.slice(1).toLowerCase()];
+        const debugInfo: any = {
+            branchName,
+            roleName,
+            attempts: []
+        };
+
+        // Try optimized Firestore queries first
+        for (const roleVariant of roleVariations) {
+            try {
+                // Try query with 'branch' field
+                const branchQuery = query(
+                    collections.users,
+                    where('branch', '==', branchName),
+                    where('role', '==', roleVariant)
+                );
+                const branchSnapshot = await getDocs(branchQuery);
+                const branchUsers = branchSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                debugInfo.attempts.push({
+                    method: 'query_branch',
+                    roleVariant,
+                    resultCount: branchUsers.length,
+                    success: branchUsers.length > 0
+                });
+
+                if (branchUsers.length > 0) {
+                    console.log(`getUsersByBranchAndRole: Found ${branchUsers.length} users using branch query with role "${roleVariant}"`);
+                    return { users: branchUsers, debugInfo };
+                }
+
+                // Try query with 'branchId' field
+                const branchIdQuery = query(
+                    collections.users,
+                    where('branchId', '==', branchName),
+                    where('role', '==', roleVariant)
+                );
+                const branchIdSnapshot = await getDocs(branchIdQuery);
+                const branchIdUsers = branchIdSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                debugInfo.attempts.push({
+                    method: 'query_branchId',
+                    roleVariant,
+                    resultCount: branchIdUsers.length,
+                    success: branchIdUsers.length > 0
+                });
+
+                if (branchIdUsers.length > 0) {
+                    console.log(`getUsersByBranchAndRole: Found ${branchIdUsers.length} users using branchId query with role "${roleVariant}"`);
+                    return { users: branchIdUsers, debugInfo };
+                }
+            } catch (queryError: any) {
+                debugInfo.attempts.push({
+                    method: 'query',
+                    roleVariant,
+                    error: queryError.message,
+                    errorCode: queryError.code
+                });
+                console.warn(`getUsersByBranchAndRole: Query failed for role "${roleVariant}":`, queryError.message);
+            }
+        }
+
+        // Fallback: Load all users and filter in memory
+        try {
+            console.log('getUsersByBranchAndRole: All queries returned 0 results, falling back to loading all users');
+            const allUsersSnapshot = await getDocs(collections.users);
+            const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            console.log(`getUsersByBranchAndRole: Loaded ${allUsers.length} total users for filtering`);
+
+            // Filter by branch (check both fields) and role (case-insensitive)
+            const filteredUsers = allUsers.filter(user => {
+                const userBranch = user.branch || '';
+                const userBranchId = user.branchId || '';
+                const userRole = (user.role || '').toLowerCase();
+                const targetRole = roleName.toLowerCase();
+                
+                const branchMatches = userBranch === branchName || userBranchId === branchName;
+                const roleMatches = userRole === targetRole;
+                
+                return branchMatches && roleMatches;
+            });
+
+            // Debug: Show what branches and roles exist
+            if (filteredUsers.length === 0) {
+                const allBranches = [...new Set(allUsers.map(u => u.branch).filter(Boolean))];
+                const allBranchIds = [...new Set(allUsers.map(u => u.branchId).filter(Boolean))];
+                const allRoles = [...new Set(allUsers.map(u => u.role).filter(Boolean))];
+                
+                debugInfo.fallbackInfo = {
+                    totalUsers: allUsers.length,
+                    availableBranches: allBranches,
+                    availableBranchIds: allBranchIds,
+                    availableRoles: allRoles,
+                    usersInBranch: allUsers.filter(u => (u.branch || u.branchId) === branchName).length
+                };
+
+                console.warn('getUsersByBranchAndRole: No users found after fallback');
+                console.warn('Available branches:', allBranches);
+                console.warn('Available branchIds:', allBranchIds);
+                console.warn('Available roles:', allRoles);
+                console.warn(`Users in branch "${branchName}":`, allUsers.filter(u => (u.branch || u.branchId) === branchName).map(u => ({ id: u.id, name: u.name, role: u.role, branch: u.branch, branchId: u.branchId })));
+            }
+
+            debugInfo.attempts.push({
+                method: 'fallback_memory',
+                resultCount: filteredUsers.length,
+                success: filteredUsers.length > 0
+            });
+
+            return { users: filteredUsers, debugInfo };
+        } catch (error: any) {
+            const errorMsg = `Failed to fetch users: ${error.message}`;
+            console.error('getUsersByBranchAndRole Error:', error);
+            debugInfo.attempts.push({
+                method: 'fallback_memory',
+                error: error.message,
+                errorCode: error.code
+            });
+            return { users: [], error: errorMsg, debugInfo };
+        }
+    },
+
+    /**
      * Get all bookers assigned to a branch
+     * Uses optimized helper function with fallback logic
      */
     async getBranchBookers(branchName: string): Promise<any[]> {
         try {
             console.log('getBranchBookers: Fetching bookers for branch:', branchName);
+            const result = await this.getUsersByBranchAndRole(branchName, 'Booker');
             
-            // Use fallback method that handles role case-insensitivity
-            // Firebase queries are case-sensitive, so we need to fetch and filter
-            const allUsersSnapshot = await getDocs(collections.users);
-            const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            
-            console.log(`getBranchBookers: Total users in database: ${allUsers.length}`);
-            
-            // Filter by branch and role (case-insensitive for role)
-            const bookers = allUsers.filter(user => {
-                const userBranch = user.branch || '';
-                const userRole = (user.role || '').toLowerCase();
-                const matches = userBranch === branchName && userRole === 'booker';
-                
-                if (user.branch === branchName) {
-                    console.log(`User in branch "${branchName}":`, { id: user.id, name: user.name, role: user.role, branch: user.branch });
-                }
-                
-                return matches;
-            });
-            
-            console.log(`getBranchBookers: Found ${bookers.length} bookers for branch "${branchName}"`);
-            
-            if (bookers.length === 0) {
-                // Debug: Show what branches exist
-                const allBranches = [...new Set(allUsers.map(u => u.branch).filter(Boolean))];
-                console.log('getBranchBookers: Available branches in database:', allBranches);
-                
-                const allRoles = [...new Set(allUsers.map(u => u.role).filter(Boolean))];
-                console.log('getBranchBookers: Available roles in database:', allRoles);
+            if (result.error) {
+                console.error('getBranchBookers Error:', result.error);
+                // Don't return empty array - log error but return what we found
             }
             
-            return bookers;
+            console.log(`getBranchBookers: Found ${result.users.length} bookers for branch "${branchName}"`);
+            if (result.debugInfo) {
+                console.log('getBranchBookers Debug Info:', result.debugInfo);
+            }
+            
+            return result.users;
         } catch (error: any) {
             console.error("Firestore Error [getBranchBookers]:", error.message);
             console.error("Error code:", error.code);
+            console.error("Error stack:", error.stack);
+            // Return empty array only as last resort
             return [];
         }
     },
 
     /**
      * Get all salesmen assigned to a branch
+     * Uses optimized helper function with fallback logic
      */
     async getBranchSalesmen(branchName: string): Promise<any[]> {
         try {
             console.log('getBranchSalesmen: Fetching salesmen for branch:', branchName);
+            const result = await this.getUsersByBranchAndRole(branchName, 'Salesman');
             
-            // Use fallback method that handles role case-insensitivity
-            const allUsersSnapshot = await getDocs(collections.users);
-            const allUsers = allUsersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            if (result.error) {
+                console.error('getBranchSalesmen Error:', result.error);
+                // Don't return empty array - log error but return what we found
+            }
             
-            // Filter by branch and role (case-insensitive for role)
-            const salesmen = allUsers.filter(user => {
-                const userBranch = user.branch || '';
-                const userRole = (user.role || '').toLowerCase();
-                return userBranch === branchName && userRole === 'salesman';
-            });
+            console.log(`getBranchSalesmen: Found ${result.users.length} salesmen for branch "${branchName}"`);
+            if (result.debugInfo) {
+                console.log('getBranchSalesmen Debug Info:', result.debugInfo);
+            }
             
-            console.log(`getBranchSalesmen: Found ${salesmen.length} salesmen for branch "${branchName}"`);
-            return salesmen;
+            return result.users;
         } catch (error: any) {
             console.error("Firestore Error [getBranchSalesmen]:", error.message);
             console.error("Error code:", error.code);
+            console.error("Error stack:", error.stack);
+            // Return empty array only as last resort
             return [];
         }
     },
@@ -1491,16 +1946,95 @@ export const dataService = {
      */
     /**
      * Get all shops from Firestore
+     * Handles both 'branch' and 'branchId' fields for branch filtering
      */
-    async getAllShops(): Promise<any[]> {
+    async getAllShops(regionId?: string, branch?: string): Promise<any[]> {
         try {
-            console.log('getAllShops: Fetching all shops from Firestore');
-            const snapshot = await getDocs(collections.shops);
+            console.log('getAllShops: Fetching shops from Firestore', { regionId, branch });
+            
+            // If branch filter provided, try both branch and branchId fields
+            if (branch) {
+                let shops: any[] = [];
+                let foundViaBranch = false;
+                let foundViaBranchId = false;
+                
+                // Try query with 'branch' field first
+                try {
+                    let q = query(collections.shops);
+                    if (regionId) {
+                        q = query(q, where('regionId', '==', regionId));
+                    }
+                    q = query(q, where('branch', '==', branch));
+                    
+                    const snapshot = await getDocs(q);
+                    shops = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    foundViaBranch = shops.length > 0;
+                    console.log(`getAllShops: Found ${shops.length} shops using 'branch' field for branch "${branch}"`);
+                } catch (branchError: any) {
+                    console.warn('getAllShops: Query with "branch" field failed:', branchError.message);
+                }
+                
+                // If no results, try 'branchId' field
+                if (shops.length === 0) {
+                    try {
+                        let q = query(collections.shops);
+                        if (regionId) {
+                            q = query(q, where('regionId', '==', regionId));
+                        }
+                        q = query(q, where('branchId', '==', branch));
+                        
+                        const snapshot = await getDocs(q);
+                        shops = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        foundViaBranchId = shops.length > 0;
+                        console.log(`getAllShops: Found ${shops.length} shops using 'branchId' field for branch "${branch}"`);
+                    } catch (branchIdError: any) {
+                        console.warn('getAllShops: Query with "branchId" field failed:', branchIdError.message);
+                    }
+                }
+                
+                // If still no results, fallback to loading all and filtering in memory
+                if (shops.length === 0) {
+                    console.log('getAllShops: Both branch queries returned 0 results, falling back to memory filter');
+                    const allShopsSnapshot = await getDocs(collections.shops);
+                    const allShops = allShopsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    
+                    shops = allShops.filter(shop => {
+                        const shopBranch = shop.branch || '';
+                        const shopBranchId = shop.branchId || '';
+                        const branchMatches = shopBranch === branch || shopBranchId === branch;
+                        const regionMatches = !regionId || shop.regionId === regionId;
+                        return branchMatches && regionMatches;
+                    });
+                    
+                    console.log(`getAllShops: Found ${shops.length} shops after memory filter`);
+                    
+                    // Debug info if still no results
+                    if (shops.length === 0) {
+                        const allBranches = [...new Set(allShops.map(s => s.branch).filter(Boolean))];
+                        const allBranchIds = [...new Set(allShops.map(s => s.branchId).filter(Boolean))];
+                        console.warn('getAllShops: No shops found. Available branches:', allBranches);
+                        console.warn('getAllShops: Available branchIds:', allBranchIds);
+                    }
+                }
+                
+                return shops;
+            }
+            
+            // No branch filter - use standard query
+            let q = query(collections.shops);
+            if (regionId) {
+                q = query(q, where('regionId', '==', regionId));
+            }
+            
+            const snapshot = await getDocs(q);
             const shops = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            console.log(`getAllShops: Found ${shops.length} shops total`);
+            console.log(`getAllShops: Found ${shops.length} shops${regionId ? ` in region ${regionId}` : ''}`);
             return shops;
         } catch (error: any) {
             console.error("Firestore Error [getAllShops]:", error.message);
+            console.error("Error code:", error.code);
+            console.error("Error stack:", error.stack);
+            // Return empty array only as last resort
             return [];
         }
     },
@@ -3621,6 +4155,23 @@ export const dataService = {
             };
         } catch (error: any) {
             console.error("Firestore Error [getTotalCreditsSummary]:", error.message);
+            return {
+                totalCredits: 0,
+                totalBills: 0,
+                bookerSummaries: [],
+            };
+        }
+    },
+
+    /**
+     * Get global credits summary across all branches (for admin dashboard)
+     */
+    async getGlobalCreditsSummary() {
+        try {
+            // Use getTotalCreditsSummary without branch parameter to get all credits
+            return await this.getTotalCreditsSummary();
+        } catch (error: any) {
+            console.error("Firestore Error [getGlobalCreditsSummary]:", error.message);
             return {
                 totalCredits: 0,
                 totalBills: 0,

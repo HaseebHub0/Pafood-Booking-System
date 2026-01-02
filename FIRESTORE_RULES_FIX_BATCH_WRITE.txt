@@ -1,0 +1,344 @@
+/**
+ * FIRESTORE SECURITY RULES - FIXED FOR BATCH WRITE PERMISSIONS
+ * 
+ * Database ID: pafood
+ * Project ID: pakasianfood-field
+ * 
+ * ⚠️ IMPORTANT: Copy this entire code and paste in Firebase Console > Firestore Database > Rules
+ * Then click "Publish" to deploy
+ * 
+ * Changes made:
+ * 1. Bookers can now write to shops collection (needed for batch writes)
+ * 2. All authenticated users (booker, salesman) can write to fallback collections (needed for batch writes)
+ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to get user role (case-insensitive)
+    function getUserRole() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      let role = userDoc.data.role;
+      // Normalize role to lowercase for comparison
+      return role is string ? role.lower() : '';
+    }
+    
+    // Helper function to get user branch
+    function getUserBranch() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc.data.branch;
+    }
+    
+    // Helper function to get user region
+    function getUserRegion() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc.data.regionId;
+    }
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return getUserRole() == 'admin';
+    }
+    
+    // Helper function to check if user is KPO
+    function isKPO() {
+      return getUserRole() == 'kpo';
+    }
+    
+    // Helper function to check if user is booker
+    function isBooker() {
+      return getUserRole() == 'booker';
+    }
+    
+    // Helper function to check if user is salesman
+    function isSalesman() {
+      return getUserRole() == 'salesman';
+    }
+    
+    // ============================================
+    // USERS COLLECTION
+    // ============================================
+    match /users/{userId} {
+      // Users can read their own document
+      allow read: if request.auth != null && (
+        request.auth.uid == userId || 
+        isAdmin() || 
+        isKPO()
+      );
+      
+      // Users can update their own document
+      allow update: if request.auth != null && (
+        request.auth.uid == userId ||
+        isAdmin() ||
+        isKPO()
+      );
+      
+      // Only admin can create/delete users
+      allow create, delete: if request.auth != null && isAdmin();
+    }
+    
+    // ============================================
+    // REGIONS COLLECTION
+    // ============================================
+    match /regions/{regionId} {
+      // Admin and KPO can read all regions
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+      
+      // Only admin can write
+      allow write: if request.auth != null && isAdmin();
+    }
+    
+    // ============================================
+    // BRANCHES COLLECTION
+    // ============================================
+    match /branches/{branchId} {
+      // Admin can read all branches
+      // KPO can read their assigned branch
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && resource.data.name == getUserBranch())
+      );
+      
+      // Only admin can write
+      allow write: if request.auth != null && isAdmin();
+    }
+    
+    // ============================================
+    // SHOPS COLLECTION
+    // ============================================
+    match /shops/{shopId} {
+      // Admin can read all shops
+      // KPO can read shops in their branch
+      // Bookers can read shops assigned to them
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        )) ||
+        (isBooker() && resource.data.bookerId == request.auth.uid) ||
+        (isSalesman() && resource.data.salesmanId == request.auth.uid)
+      );
+      
+      // Admin, KPO, and Bookers can write (Bookers need to create/update shops via batch writes)
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker()
+      );
+    }
+    
+    // ============================================
+    // PRODUCTS COLLECTION
+    // ============================================
+    match /products/{productId} {
+      // Admin, KPO, Bookers, and Salesmen can read products
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker() ||
+        isSalesman()
+      );
+      
+      // Only admin can write
+      allow write: if request.auth != null && isAdmin();
+    }
+    
+    // ============================================
+    // ORDERS COLLECTION
+    // ============================================
+    match /orders/{orderId} {
+      // Admin can read all orders
+      // KPO can read orders in their branch
+      // Bookers can read their own orders
+      // Salesmen can read orders for their shops
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        )) ||
+        (isBooker() && resource.data.bookerId == request.auth.uid) ||
+        (isSalesman() && resource.data.salesmanId == request.auth.uid)
+      );
+      
+      // Admin, KPO, and Bookers can create/update orders
+      allow create, update: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker()
+      );
+      
+      // Only admin can delete
+      allow delete: if request.auth != null && isAdmin();
+    }
+    
+    // ============================================
+    // ORDER ITEMS COLLECTION
+    // ============================================
+    match /order_items/{itemId} {
+      // Same rules as orders
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker() ||
+        isSalesman()
+      );
+      
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker()
+      );
+    }
+    
+    // ============================================
+    // DELIVERIES COLLECTION
+    // ============================================
+    match /deliveries/{deliveryId} {
+      // Admin can read all deliveries
+      // KPO can read deliveries in their branch
+      // Bookers can read deliveries for their orders
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        )) ||
+        (isBooker() && resource.data.bookerId == request.auth.uid) ||
+        (isSalesman() && resource.data.salesmanId == request.auth.uid)
+      );
+      
+      // Admin, KPO can write
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // LEDGER TRANSACTIONS COLLECTION
+    // ============================================
+    match /ledger_transactions/{transactionId} {
+      // Admin can read all ledger entries
+      // KPO can read ledger entries in their branch
+      // Bookers can read their own ledger entries
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch_id == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        )) ||
+        (isBooker() && resource.data.booker_id == request.auth.uid) ||
+        (isBooker() && resource.data.bookerId == request.auth.uid)
+      );
+      
+      // Admin, KPO can write
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // LOAD FORMS COLLECTION
+    // ============================================
+    match /load_forms/{formId} {
+      // Admin can read all
+      // KPO can read forms in their branch
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        ))
+      );
+      
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // RETURNS COLLECTION
+    // ============================================
+    match /returns/{returnId} {
+      // Admin can read all
+      // KPO can read returns in their branch
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        ))
+      );
+      
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // TARGETS COLLECTION
+    // ============================================
+    match /targets/{targetId} {
+      // Admin can read all
+      // KPO can read targets in their branch
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.branch == getUserBranch() || 
+          resource.data.branchId == getUserBranch()
+        ))
+      );
+      
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // MAPPINGS COLLECTION (Salesman-Booker mappings)
+    // ============================================
+    match /mappings/{mappingId} {
+      // Admin can read all
+      // KPO can read mappings in their branch
+      // Salesmen can read their own mappings
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        (isKPO() && (
+          resource.data.regionId == getUserRegion()
+        )) ||
+        (isSalesman() && resource.data.salesmanId == request.auth.uid)
+      );
+      
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO()
+      );
+    }
+    
+    // ============================================
+    // OTHER COLLECTIONS (Fallback)
+    // ============================================
+    match /{document=**} {
+      // Default: Allow authenticated users to read
+      // Admin, KPO, Bookers, and Salesmen can write (for batch operations)
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (
+        isAdmin() || 
+        isKPO() ||
+        isBooker() ||
+        isSalesman()
+      );
+    }
+  }
+}
+

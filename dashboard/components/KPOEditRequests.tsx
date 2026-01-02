@@ -83,7 +83,7 @@ const KPOEditRequests: React.FC<KPOEditRequestsProps> = ({ user }) => {
             
             // Update order status to 'submitted' and set editApproved flag (allows editing)
             // @ts-ignore: CDN import
-            const { doc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+            const { doc, updateDoc } = await import('firebase/firestore');
             const { db } = await import('../firebase');
             const orderRef = doc(db, 'orders', request.id);
             await updateDoc(orderRef, {
@@ -135,7 +135,7 @@ const KPOEditRequests: React.FC<KPOEditRequestsProps> = ({ user }) => {
             // Store rejection reason in order notes
             try {
                 // @ts-ignore: CDN import
-                const { doc, updateDoc } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+                const { doc, updateDoc } = await import('firebase/firestore');
                 const { db } = await import('../firebase');
                 const orderRef = doc(db, 'orders', request.id);
                 await updateDoc(orderRef, {

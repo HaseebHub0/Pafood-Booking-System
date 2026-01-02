@@ -4,7 +4,7 @@ import { storage, STORAGE_KEYS } from '../services/storage/asyncStorage';
 import { firebaseAuthService } from '../services/firebase';
 import { auth } from '../config/firebase';
 
-// Helper function to normalize user role to lowercase (booker or salesman)
+// Helper function to normalize user role (supports booker, salesman, admin, kpo)
 const normalizeRole = (role: any): UserRole => {
   if (!role || typeof role !== 'string') {
     return 'booker'; // Default fallback
@@ -16,6 +16,10 @@ const normalizeRole = (role: any): UserRole => {
     return 'booker';
   } else if (roleLower === 'salesman') {
     return 'salesman';
+  } else if (roleLower === 'admin' || roleLower === 'administrator') {
+    return 'admin';
+  } else if (roleLower === 'kpo' || roleLower === 'k.p.o' || roleLower === 'k.p.o.') {
+    return 'kpo';
   }
   
   // Default fallback

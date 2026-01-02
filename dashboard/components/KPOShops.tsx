@@ -39,13 +39,14 @@ const KPOShops: React.FC<KPOShopsProps> = ({ user }) => {
                 setIsLoading(true);
                 console.log('KPOShops: Loading data for branch:', user.branch);
                 
+                // Use filtered getAllShops to reduce reads - only get shops for this branch
                 const [branchBookers, allShops] = await Promise.all([
                     dataService.getBranchBookers(user.branch),
-                    dataService.getAllShops()
+                    dataService.getAllShops(undefined, user.branch) // Filter by branch
                 ]);
                 
                 console.log('KPOShops: Loaded bookers:', branchBookers.length);
-                console.log('KPOShops: Loaded total shops:', allShops.length);
+                console.log('KPOShops: Loaded shops for branch:', allShops.length);
                 
                 // Filter shops by bookers in this branch
                 const bookerIds = branchBookers.map(b => b.id);

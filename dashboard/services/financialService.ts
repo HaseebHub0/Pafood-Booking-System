@@ -9,6 +9,7 @@
 import { dataService } from '../dataService';
 import { toSafeDate } from '../utils/dateUtils';
 import { DateRange } from '../utils/dateUtils';
+import { isTestShop } from '../utils/shopFilters';
 
 export interface FinancialMetrics {
     totalCashToday: number;
@@ -57,7 +58,7 @@ export async function getTotalCashToday(branchName?: string, dateRange?: DateRan
         console.log('financialService.getTotalCashToday: Fetching from ledger entries');
         
         // @ts-ignore - Firebase CDN imports (browser environment)
-        const { getDocs, query, where, collection } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+        const { getDocs, query, where, collection } = await import('firebase/firestore');
         const { db } = await import('../firebase');
         
         const today = dateRange ? dateRange.start : new Date();
@@ -73,23 +74,46 @@ export async function getTotalCashToday(branchName?: string, dateRange?: DateRan
             try {
                 const branchBookers = await dataService.getBranchBookers(branchName);
                 const bookerIds = branchBookers.map(b => b.id);
-                const allShops = await dataService.getAllShops();
-                const branchShops = allShops.filter(shop => bookerIds.includes(shop.bookerId));
-                branchShopIds = new Set(branchShops.map(shop => shop.id));
+                // Use filtered getAllShops to reduce reads
+                const branchShops = await dataService.getAllShops(undefined, branchName);
+                const filteredShops = branchShops.filter(shop => bookerIds.includes(shop.bookerId));
+                branchShopIds = new Set(filteredShops.map(shop => shop.id));
             } catch (e) {
                 console.warn('Could not fetch branch shops:', e);
             }
         }
         
-        // Query ledger_transactions for today's entries
-        const ledgerQuery = query(collection(db, 'ledger_transactions'));
-        const snapshot = await getDocs(ledgerQuery);
-        let entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Query ledger_transactions for today's entries with date filter
+        // @ts-ignore - Firebase CDN imports
+        const { Timestamp } = await import('firebase/firestore');
+        const todayTimestamp = Timestamp.fromDate(today);
+        const tomorrowTimestamp = Timestamp.fromDate(tomorrow);
         
-        // Filter by date and type
+        // Try date-filtered query first, fallback if needed
+        let entries: any[] = [];
+        try {
+            const ledgerQuery = query(
+                collection(db, 'ledger_transactions'),
+                where('created_at', '>=', todayTimestamp),
+                where('created_at', '<', tomorrowTimestamp)
+            );
+            const snapshot = await getDocs(ledgerQuery);
+            entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        } catch (queryError: any) {
+            console.warn('getTotalCashToday: Date-filtered query failed, trying without filter:', queryError.message);
+            // Fallback: Load all and filter in memory
+            const fallbackQuery = query(collection(db, 'ledger_transactions'));
+            const fallbackSnapshot = await getDocs(fallbackQuery);
+            entries = fallbackSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // Filter by date in memory
+            entries = entries.filter(entry => {
+                const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                return entryDate >= today && entryDate < tomorrow;
+            });
+        }
+        
+        // Filter by type
         entries = entries.filter(entry => {
-            const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
-            const isInRange = entryDate >= today && entryDate < tomorrow;
             
             // Filter by branch if provided
             if (branchName && branchShopIds) {
@@ -99,7 +123,7 @@ export async function getTotalCashToday(branchName?: string, dateRange?: DateRan
                 }
             }
             
-            return isInRange && (entry.type === 'SALE_DELIVERED' || entry.type === 'RETURN');
+            return entry.type === 'SALE_DELIVERED' || entry.type === 'RETURN';
         });
         
         // Sum net_cash: positive from SALE_DELIVERED, negative from RETURN
@@ -180,45 +204,129 @@ export async function getTotalCashToday(branchName?: string, dateRange?: DateRan
 /**
  * Get Global Sales - ONLY from ledger entries (SALE_DELIVERED type)
  * This is the single source of truth for financial calculations
+ * 
+ * @param dateRange - Optional date range. If not provided, uses all-time data for admin dashboard
+ * @param excludeTestShops - Whether to exclude test shops (default: true for admin)
  */
-export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
+export async function getGlobalSales(dateRange?: DateRange, excludeTestShops: boolean = true): Promise<number> {
     try {
-        console.log('financialService.getGlobalSales: Fetching from ledger entries');
+        console.log('financialService.getGlobalSales: Fetching from ledger entries', { dateRange, excludeTestShops });
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:136',message:'getGlobalSales entry',data:{dateRange},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:136',message:'getGlobalSales entry',data:{dateRange,excludeTestShops},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
         // #endregion
         
         // @ts-ignore - Firebase CDN imports (browser environment)
-        const { getDocs, query, where, collection } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+        const { getDocs, query, where, collection, Timestamp } = await import('firebase/firestore');
         const { db } = await import('../firebase');
         
-        // Query ALL ledger_transactions first to see what exists
-        const allQuery = query(collection(db, 'ledger_transactions'));
-        const allSnapshot = await getDocs(allQuery);
-        const allEntries = allSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Query ledger_transactions - try with date filter, fallback if needed
+        // Note: created_at might be ISO string or Timestamp, so we'll filter in memory if query fails
+        let allEntries: any[] = [];
+        try {
+            let allQuery;
+            if (dateRange) {
+                const startTimestamp = Timestamp.fromDate(dateRange.start);
+                const endTimestamp = Timestamp.fromDate(dateRange.end);
+                allQuery = query(
+                    collection(db, 'ledger_transactions'),
+                    where('created_at', '>=', startTimestamp),
+                    where('created_at', '<=', endTimestamp)
+                );
+            } else {
+                // For admin dashboard (no dateRange), load ALL entries (all-time)
+                // Remove 90-day limit to show complete totals
+                console.log('getGlobalSales: No dateRange provided, loading all-time data');
+                allQuery = query(collection(db, 'ledger_transactions'));
+            }
+            const allSnapshot = await getDocs(allQuery);
+            allEntries = allSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            // If dateRange was provided, filter in memory (in case query didn't work)
+            if (dateRange && allEntries.length > 0) {
+                allEntries = allEntries.filter(entry => {
+                    const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                    return entryDate >= dateRange.start && entryDate <= dateRange.end;
+                });
+            }
+        } catch (queryError: any) {
+            console.warn('getGlobalSales: Query failed, trying fallback:', queryError.message);
+            // Fallback: Load all and filter in memory
+            const fallbackQuery = query(collection(db, 'ledger_transactions'));
+            const fallbackSnapshot = await getDocs(fallbackQuery);
+            allEntries = fallbackSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // Apply date filter in memory if dateRange provided
+            if (dateRange) {
+                allEntries = allEntries.filter(entry => {
+                    const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                    return entryDate >= dateRange.start && entryDate <= dateRange.end;
+                });
+            }
+            // No 90-day limit if no dateRange - use all-time data
+        }
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:150',message:'All ledger entries query result',data:{totalEntries:allEntries.length,entryTypes:allEntries.map((e:any)=>e.type),sampleEntry:allEntries[0]},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
         // #endregion
         
-        // Query ledger_transactions for SALE_DELIVERED entries
-        const ledgerQuery = query(
-            collection(db, 'ledger_transactions'),
-            where('type', '==', 'SALE_DELIVERED')
-        );
+        // Query ledger_transactions for SALE_DELIVERED entries with date filter
+        // Use the allEntries we already loaded to avoid duplicate queries
+        let entries = allEntries.filter((entry: any) => entry.type === 'SALE_DELIVERED');
         
-        const snapshot = await getDocs(ledgerQuery);
-        let entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // If we got entries from allEntries, use them; otherwise try direct query
+        if (entries.length === 0) {
+            try {
+                const ledgerQuery = query(
+                    collection(db, 'ledger_transactions'),
+                    where('type', '==', 'SALE_DELIVERED')
+                );
+                const snapshot = await getDocs(ledgerQuery);
+                entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                // Apply date filter in memory if dateRange provided
+                if (dateRange) {
+                    entries = entries.filter(entry => {
+                        const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                        return entryDate >= dateRange.start && entryDate <= dateRange.end;
+                    });
+                }
+                // No 90-day limit if no dateRange - use all-time data
+            } catch (queryError: any) {
+                console.warn('getGlobalSales: SALE_DELIVERED query failed:', queryError.message);
+                entries = [];
+            }
+        }
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:160',message:'SALE_DELIVERED query result',data:{foundEntries:entries.length,entries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
         // #endregion
         
-        // Also try SALE type for legacy entries
-        const saleQuery = query(
-            collection(db, 'ledger_transactions'),
-            where('type', '==', 'SALE')
-        );
-        const saleSnapshot = await getDocs(saleQuery);
-        const saleEntries = saleSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Also try SALE type for legacy entries - filter from allEntries
+        const saleEntries = allEntries.filter((entry: any) => entry.type === 'SALE');
+        
+        // If no SALE entries found, try direct query
+        if (saleEntries.length === 0) {
+            try {
+                const saleQuery = query(
+                    collection(db, 'ledger_transactions'),
+                    where('type', '==', 'SALE')
+                );
+                const saleSnapshot = await getDocs(saleQuery);
+                const directSaleEntries = saleSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                // Apply date filter in memory if dateRange provided
+                if (dateRange) {
+                    entries.push(...directSaleEntries.filter(entry => {
+                        const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                        return entryDate >= dateRange.start && entryDate <= dateRange.end;
+                    }));
+                } else {
+                    // No dateRange - include all entries (all-time)
+                    entries.push(...directSaleEntries);
+                }
+            } catch (queryError: any) {
+                console.warn('getGlobalSales: SALE query failed:', queryError.message);
+            }
+        } else {
+            entries.push(...saleEntries);
+        }
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:170',message:'SALE query result',data:{foundEntries:saleEntries.length,saleEntries},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
         // #endregion
@@ -227,14 +335,22 @@ export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
         entries = [...entries, ...saleEntries];
         console.log(`financialService.getGlobalSales: Found ${entries.length} total ledger entries (${entries.filter((e:any)=>e.type==='SALE_DELIVERED').length} SALE_DELIVERED, ${entries.filter((e:any)=>e.type==='SALE').length} SALE)`);
         
-        // Filter by date range if provided
-        const beforeDateFilter = entries.length;
-        if (dateRange) {
+        // Date filter already applied (either in query or in memory)
+        console.log(`financialService.getGlobalSales: Found ${entries.length} entries (${entries.filter((e:any)=>e.type==='SALE_DELIVERED').length} SALE_DELIVERED, ${entries.filter((e:any)=>e.type==='SALE').length} SALE)`);
+        
+        // Filter test shops if requested
+        if (excludeTestShops) {
+            // Get shop names from ledger entries (shop_name, shopName, or fetch from orderId)
+            const entriesBeforeFilter = entries.length;
             entries = entries.filter(entry => {
-                const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
-                return entryDate >= dateRange.start && entryDate <= dateRange.end;
+                const shopName = entry.shop_name || entry.shopName || entry.shop?.shopName;
+                if (isTestShop(shopName)) {
+                    console.log(`getGlobalSales: Excluding test shop entry: ${shopName}`);
+                    return false;
+                }
+                return true;
             });
-            console.log(`financialService.getGlobalSales: After date filter: ${entries.length} entries (from ${beforeDateFilter})`);
+            console.log(`getGlobalSales: Filtered ${entriesBeforeFilter - entries.length} test shop entries`);
         }
         
         // Sum net_cash from all SALE_DELIVERED entries
@@ -243,12 +359,12 @@ export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
             return sum + (typeof netCash === 'number' ? netCash : parseFloat(netCash) || 0);
         }, 0);
         
-        console.log(`financialService.getGlobalSales: Calculated total sales: ${totalSales} from ${entries.length} entries`);
+        console.log(`financialService.getGlobalSales: Calculated total sales: ${totalSales} from ${entries.length} entries (test shops excluded: ${excludeTestShops})`);
         
         // ALWAYS fall back to orders if ledger entries are insufficient (for migration/compatibility)
         // This ensures we show data even if ledger entries haven't been created yet
         try {
-            const orders = await getAllDeliveredOrders(dateRange);
+            const orders = await getAllDeliveredOrders(dateRange, excludeTestShops);
             // #region agent log
             fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:233',message:'getGlobalSales fallback orders received',data:{orderCount:orders.length,orders:orders.slice(0,3).map((o:any)=>({id:o.id,grandTotal:o.grandTotal,totalAmount:o.totalAmount}))},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
             // #endregion
@@ -256,7 +372,7 @@ export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
                 const amount = order.grandTotal || order.totalAmount || 0;
                 return sum + amount;
             }, 0);
-            console.log(`financialService.getGlobalSales: Orders fallback - found ${orders.length} orders, total: ${ordersSales}`);
+            console.log(`financialService.getGlobalSales: Orders fallback - found ${orders.length} orders, total: ${ordersSales} (test shops excluded: ${excludeTestShops})`);
             // #region agent log
             fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:240',message:'getGlobalSales comparing ledger vs orders',data:{ledgerSales:totalSales,ordersSales,willUseOrders:ordersSales > totalSales || totalSales === 0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
             // #endregion
@@ -282,7 +398,7 @@ export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
         console.error('financialService.getGlobalSales Error:', error.message);
         // Fallback to old method for compatibility during migration
         try {
-            const orders = await getAllDeliveredOrders(dateRange);
+            const orders = await getAllDeliveredOrders(dateRange, excludeTestShops);
             const totalSales = orders.reduce((sum, order) => {
                 return sum + (order.grandTotal || order.totalAmount || 0);
             }, 0);
@@ -297,14 +413,16 @@ export async function getGlobalSales(dateRange?: DateRange): Promise<number> {
 
 /**
  * Get all delivered orders (helper function)
+ * @param dateRange - Optional date range filter
+ * @param excludeTestShops - Whether to exclude test shops (default: true)
  */
-async function getAllDeliveredOrders(dateRange?: DateRange): Promise<any[]> {
+async function getAllDeliveredOrders(dateRange?: DateRange, excludeTestShops: boolean = true): Promise<any[]> {
     try {
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:272',message:'getAllDeliveredOrders entry',data:{dateRange},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
         // #endregion
         // @ts-ignore - Firebase CDN imports (browser environment)
-        const { getDocs, query, where } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+        const { getDocs, query, where } = await import('firebase/firestore');
         const { collections } = await import('../firebase');
         
         // Query for delivered orders
@@ -331,8 +449,18 @@ async function getAllDeliveredOrders(dateRange?: DateRange): Promise<any[]> {
             // #endregion
         }
         
+        // Filter test shops if requested
+        if (excludeTestShops) {
+            const beforeTestFilter = orders.length;
+            orders = orders.filter(order => {
+                const shopName = order.shopName || order.shop?.shopName;
+                return !isTestShop(shopName);
+            });
+            console.log(`getAllDeliveredOrders: Filtered ${beforeTestFilter - orders.length} test shop orders`);
+        }
+        
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:300',message:'getAllDeliveredOrders returning',data:{finalOrderCount:orders.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:300',message:'getAllDeliveredOrders returning',data:{finalOrderCount:orders.length,excludeTestShops},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
         // #endregion
         return orders;
     } catch (error: any) {
@@ -356,7 +484,7 @@ export async function getFinancialLedgerEntries(branchName?: string): Promise<an
         // #endregion
         
         // @ts-ignore - Firebase CDN imports (browser environment)
-        const { getDocs, query, where, collection } = await import('https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js');
+        const { getDocs, query, where, collection, Timestamp } = await import('firebase/firestore');
         const { db } = await import('../firebase');
         
         // Get branch shops if branchName is provided (for filtering)
@@ -365,8 +493,8 @@ export async function getFinancialLedgerEntries(branchName?: string): Promise<an
             try {
                 const branchBookers = await dataService.getBranchBookers(branchName);
                 const bookerIds = branchBookers.map(b => b.id);
-                const allShops = await dataService.getAllShops();
-                const branchShops = allShops.filter(shop => bookerIds.includes(shop.bookerId));
+                // Use filtered getAllShops instead of loading all shops
+                const branchShops = await dataService.getAllShops(undefined, branchName);
                 branchShopIds = new Set(branchShops.map(shop => shop.id));
                 console.log(`financialService.getFinancialLedgerEntries: Branch ${branchName} has ${branchShopIds.size} shops`);
                 // #region agent log
@@ -381,9 +509,51 @@ export async function getFinancialLedgerEntries(branchName?: string): Promise<an
         }
         
         // Query ledger_transactions for SALE_DELIVERED and RETURN entries
-        const ledgerQuery = query(collection(db, 'ledger_transactions'));
-        const snapshot = await getDocs(ledgerQuery);
-        let entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // For branch-specific queries, load all entries (branch filter will reduce results)
+        // For admin queries, limit to last 90 days to prevent excessive reads
+        let entries: any[] = [];
+        try {
+            // If branch-specific query, load all entries (branch filter will handle reduction)
+            // If admin query (no branch), limit to 90 days
+            if (branchName) {
+                // Branch query: Load all entries, branch filter will reduce results
+                const ledgerQuery = query(collection(db, 'ledger_transactions'));
+                const snapshot = await getDocs(ledgerQuery);
+                entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                console.log(`getFinancialLedgerEntries: Loaded ${entries.length} total entries for branch filtering`);
+            } else {
+                // Admin query: Limit to last 90 days to prevent excessive reads
+                const ninetyDaysAgo = new Date();
+                ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+                const startTimestamp = Timestamp.fromDate(ninetyDaysAgo);
+                
+                const ledgerQuery = query(
+                    collection(db, 'ledger_transactions'),
+                    where('created_at', '>=', startTimestamp)
+                );
+                const snapshot = await getDocs(ledgerQuery);
+                entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                console.log(`getFinancialLedgerEntries: Loaded ${entries.length} entries (90 days limit)`);
+            }
+        } catch (queryError: any) {
+            console.warn('getFinancialLedgerEntries: Query failed, trying fallback:', queryError.message);
+            // Fallback: Load all and filter in memory
+            const fallbackQuery = query(collection(db, 'ledger_transactions'));
+            const fallbackSnapshot = await getDocs(fallbackQuery);
+            entries = fallbackSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            console.log(`getFinancialLedgerEntries: Fallback loaded ${entries.length} total entries`);
+            
+            // Only apply date filter for admin queries (not branch-specific)
+            if (!branchName) {
+                const ninetyDaysAgo = new Date();
+                ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+                entries = entries.filter(entry => {
+                    const entryDate = toSafeDate(entry.created_at || entry.date || entry.createdAt);
+                    return entryDate >= ninetyDaysAgo;
+                });
+                console.log(`getFinancialLedgerEntries: After date filter: ${entries.length} entries`);
+            }
+        }
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'financialService.ts:251',message:'Raw ledger entries from query',data:{totalEntries:entries.length,entryTypes:entries.map((e:any)=>e.type),sampleEntry:entries[0]},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
         // #endregion

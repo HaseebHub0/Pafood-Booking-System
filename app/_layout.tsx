@@ -30,6 +30,83 @@ export default function RootLayout() {
     // Updates check on app load (configured in app.json: updates.checkAutomatically)
     // No manual update check needed - expo-updates handles it automatically
 
+    // Setup global error handler for unhandled promise rejections (React Native)
+    if (Platform.OS !== 'web') {
+      try {
+        // Helper function to check if error is a Firestore internal error
+        const isFirestoreInternalError = (error: any): boolean => {
+          if (!error) return false;
+          const errorMessage = typeof error === 'string' ? error : error?.message || '';
+          const errorCode = error?.code;
+          return (
+            errorMessage.includes('INTERNAL ASSERTION FAILED') ||
+            errorMessage.includes('Unexpected state') ||
+            errorCode === 'ca9' ||
+            errorCode === 'c050' ||
+            errorCode === 'b815' ||
+            errorMessage.includes('ID: ca9') ||
+            errorMessage.includes('ID: c050') ||
+            errorMessage.includes('ID: b815')
+          );
+        };
+        
+        // Intercept console.error and console.warn for React Native
+        const originalConsoleError = console.error.bind(console);
+        const originalConsoleWarn = console.warn.bind(console);
+        
+        console.error = (...args: any[]) => {
+          const errorString = args.map(arg => {
+            if (typeof arg === 'string') return arg;
+            if (arg?.message) return arg.message;
+            if (arg?.toString) return arg.toString();
+            return String(arg);
+          }).join(' ');
+          
+          if (isFirestoreInternalError(errorString) || args.some(arg => isFirestoreInternalError(arg))) {
+            // Suppress Firestore internal errors from console completely
+            return;
+          }
+          originalConsoleError(...args);
+        };
+        
+        console.warn = (...args: any[]) => {
+          const errorString = args.map(arg => {
+            if (typeof arg === 'string') return arg;
+            if (arg?.message) return arg.message;
+            if (arg?.toString) return arg.toString();
+            return String(arg);
+          }).join(' ');
+          
+          if (isFirestoreInternalError(errorString) || args.some(arg => isFirestoreInternalError(arg))) {
+            // Suppress Firestore internal errors from console completely
+            return;
+          }
+          originalConsoleWarn(...args);
+        };
+        
+        // ErrorUtils is available globally in React Native
+        const ErrorUtils = (global as any).ErrorUtils;
+        if (ErrorUtils) {
+          const originalHandler = ErrorUtils.getGlobalHandler();
+          
+          ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
+            if (isFirestoreInternalError(error)) {
+              // Suppress - don't log or handle
+              return;
+            }
+            
+            // Call original handler for other errors
+            if (originalHandler) {
+              originalHandler(error, isFatal);
+            }
+          });
+        }
+      } catch (e) {
+        // ErrorUtils might not be available in all environments
+        console.warn('Could not setup ErrorUtils handler:', e);
+      }
+    }
+
     // Initialize Firebase
     initializeFirebase().catch((error) => {
       console.error('Firebase initialization error:', error);

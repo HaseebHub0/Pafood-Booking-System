@@ -102,6 +102,9 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
 
     const handleEdit = (staff: User) => {
         setEditingUserId(staff.id);
+        // Set formRole based on staff's actual role
+        const staffRole = staff.role === 'Booker' ? 'Booker' : 'Salesman';
+        setFormRole(staffRole);
         setFormData({
             name: staff.name || '',
             email: staff.email || '',
@@ -506,6 +509,7 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
                             </div>
                         )}
 
+                        {/* Booker assignment section - ONLY for Salesman, NOT for Booker */}
                         {formRole === 'Salesman' && (
                             <div className="md:col-span-2 space-y-2">
                                 <label className="text-xs font-bold uppercase text-slate-500">Assign Bookers (Optional)</label>
@@ -598,7 +602,7 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
             )}
 
             {/* Staff List */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {isLoading ? (
                     <div className="col-span-full py-12 text-center">
                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
@@ -612,66 +616,108 @@ const KPOUserManagement: React.FC<KPOUserManagementProps> = ({ user }) => {
                     staffList.map((staff) => (
                     <div 
                         key={staff.id} 
-                        className="glass-panel p-5 rounded-2xl bg-white relative overflow-hidden group hover:border-primary/30 transition-all cursor-pointer"
-                        onClick={() => handleViewDetails(staff)}
+                        className="glass-panel p-4 rounded-xl bg-white border border-slate-200 hover:border-primary/50 hover:shadow-lg transition-all group"
                     >
-                        <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="h-12 w-12 rounded-full bg-slate-200 bg-cover bg-center border border-white shadow-sm" style={{ backgroundImage: `url(${staff.avatarUrl})` }}></div>
-                                <div>
-                                    <h3 className="font-bold text-slate-900">{staff.name}</h3>
-                                    <p className="text-xs text-slate-500">{staff.email}</p>
+                        {/* Header with Avatar and Actions */}
+                        <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <div className="h-14 w-14 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 bg-cover bg-center border-2 border-white shadow-md flex-shrink-0" 
+                                     style={{ backgroundImage: staff.avatarUrl ? `url(${staff.avatarUrl})` : 'none' }}>
+                                    {!staff.avatarUrl && (
+                                        <div className="h-full w-full rounded-full bg-gradient-to-br from-primary/20 to-primary/40 flex items-center justify-center">
+                                            <span className="material-symbols-outlined text-slate-600 text-xl">
+                                                {staff.role === 'Booker' ? 'person' : 'local_shipping'}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h3 className="font-bold text-slate-900 text-sm truncate" title={staff.name}>
+                                        {staff.name}
+                                    </h3>
+                                    <p className="text-xs text-slate-500 truncate" title={staff.email}>
+                                        {staff.email}
+                                    </p>
+                                    <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        staff.role === 'Booker' 
+                                            ? 'bg-green-100 text-green-700' 
+                                            : 'bg-blue-100 text-blue-700'
+                                    }`}>
+                                        {staff.role}
+                                    </span>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 flex-shrink-0">
                                 <button 
-                                    onClick={() => handleEdit(staff)}
-                                    className="text-slate-300 hover:text-primary transition-colors"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleEdit(staff);
+                                    }}
+                                    className="p-1.5 rounded-lg text-slate-400 hover:text-primary hover:bg-primary/10 transition-colors"
                                     title="Edit user"
                                 >
-                                    <span className="material-symbols-outlined">edit</span>
+                                    <span className="material-symbols-outlined text-lg">edit</span>
                                 </button>
                                 <button 
-                                    onClick={() => handleDelete(staff)}
-                                    className="text-slate-300 hover:text-red-500 transition-colors"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDelete(staff);
+                                    }}
+                                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
                                     title="Delete user"
                                 >
-                                    <span className="material-symbols-outlined">delete</span>
+                                    <span className="material-symbols-outlined text-lg">delete</span>
                                 </button>
                             </div>
                         </div>
                         
-                        <div className="space-y-3">
-                            <div className="flex justify-between items-center p-2 rounded-lg bg-slate-50 border border-slate-100">
-                                <span className="text-xs font-bold text-slate-500 uppercase">Assigned Area</span>
-                                <span className="text-sm font-bold text-slate-900 flex items-center gap-1">
-                                    <span className="material-symbols-outlined text-[16px] text-primary">location_on</span>
-                                    {staff.area}
+                        {/* Information Cards */}
+                        <div className="space-y-2 mb-3">
+                            {/* Assigned Area */}
+                            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                                <div className="flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-slate-500 text-base">location_on</span>
+                                    <span className="text-xs font-semibold text-slate-600">Area</span>
+                                </div>
+                                <span className="text-xs font-bold text-slate-900 truncate ml-2" title={staff.area || 'Not assigned'}>
+                                    {staff.area || 'N/A'}
                                 </span>
                             </div>
 
-                            {staff.role === 'Booker' && (
-                                <div className="flex justify-between items-center p-2 rounded-lg bg-green-50 border border-green-100">
-                                    <span className="text-xs font-bold text-green-700 uppercase">Max Discount</span>
-                                    <span className="text-sm font-bold text-green-700">{staff.maxDiscount}%</span>
+                            {/* Role-specific Information */}
+                            {staff.role === 'Booker' && staff.maxDiscount !== undefined && (
+                                <div className="flex items-center justify-between p-2.5 rounded-lg bg-green-50 border border-green-200">
+                                    <div className="flex items-center gap-2">
+                                        <span className="material-symbols-outlined text-green-600 text-base">percent</span>
+                                        <span className="text-xs font-semibold text-green-700">Max Discount</span>
+                                    </div>
+                                    <span className="text-sm font-bold text-green-700">
+                                        {staff.maxDiscount}%
+                                    </span>
                                 </div>
                             )}
 
                             {staff.role === 'Salesman' && (
-                                <div className="flex justify-between items-center p-2 rounded-lg bg-blue-50 border border-blue-100">
-                                    <span className="text-xs font-bold text-blue-700 uppercase">Delivery Route</span>
-                                    <span className="text-xs font-bold text-blue-700">Active</span>
+                                <div className="flex items-center justify-between p-2.5 rounded-lg bg-blue-50 border border-blue-200">
+                                    <div className="flex items-center gap-2">
+                                        <span className="material-symbols-outlined text-blue-600 text-base">route</span>
+                                        <span className="text-xs font-semibold text-blue-700">Status</span>
+                                    </div>
+                                    <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
+                                        Active
+                                    </span>
                                 </div>
                             )}
                         </div>
                         
-                        {staff.role === 'Salesman' && (
-                             <div className="mt-4 pt-4 border-t border-slate-100">
-                                <p className="text-xs text-slate-400 text-center">
-                                    Automatically linked to all bookers in {staff.area}
-                                </p>
-                             </div>
-                        )}
+                        {/* View Details Button */}
+                        <button
+                            onClick={() => handleViewDetails(staff)}
+                            className="w-full py-2 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors flex items-center justify-center gap-2"
+                        >
+                            <span className="material-symbols-outlined text-base">visibility</span>
+                            View Details
+                        </button>
                     </div>
                     ))
                 )}

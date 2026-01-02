@@ -170,8 +170,21 @@ const BranchPerformanceModal: React.FC<BranchPerformanceModalProps> = ({ onClose
                                     }
                                 </p>
                                 <p className="text-xs text-slate-400 mt-2">
+                                    This could mean:
+                                </p>
+                                <ul className="text-xs text-slate-400 mt-1 text-left max-w-md mx-auto list-disc list-inside space-y-1">
+                                    <li>No delivered orders exist in this time period</li>
+                                    <li>Orders exist but branch mapping failed (check console for details)</li>
+                                    <li>Branches may not be assigned to bookers in the system</li>
+                                </ul>
+                                <p className="text-xs text-slate-400 mt-2">
                                     Try selecting a different region or check if there are delivered orders in this time period.
                                 </p>
+                                {process.env.NODE_ENV === 'development' && (
+                                    <p className="text-xs text-slate-300 mt-2 font-mono">
+                                        Debug: Check browser console for branch mapping details
+                                    </p>
+                                )}
                             </div>
                         </div>
                     ) : (

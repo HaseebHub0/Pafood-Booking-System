@@ -4,15 +4,18 @@ import { exportToCSV } from '../utils/csvExporter';
 
 interface BookerDiscountData {
     bookerId: string;
+    bookerIds?: string[]; // For grouped bookers
     bookerName: string;
     branch: string;
     region: string;
+    regionId?: string; // Store regionId for mapping
     currentMonth: string;
     currentMonthTotal: number;
     allMonths: Record<string, number>;
     totalUnauthorizedDiscount: number;
     orderIds: string[];
     lastResetDate?: string;
+    groupedCount?: number; // Number of booker IDs grouped together
 }
 
 const AdminDiscountMonitoring: React.FC = () => {
@@ -25,6 +28,7 @@ const AdminDiscountMonitoring: React.FC = () => {
     const [resettingBooker, setResettingBooker] = useState<{ bookerId: string; month: string } | null>(null);
     const [branches, setBranches] = useState<string[]>([]);
     const [regions, setRegions] = useState<string[]>([]);
+    const [regionMap, setRegionMap] = useState<Record<string, string>>({}); // regionId -> regionName
 
     useEffect(() => {
         loadData();
@@ -39,27 +43,47 @@ const AdminDiscountMonitoring: React.FC = () => {
             setIsLoading(true);
             setError(null);
 
+            // Load regions first to map regionId to region name
+            const regionsData = await dataService.getRegions();
+            const regionIdToNameMap = regionsData.reduce((acc, r) => {
+                acc[r.id] = r.name;
+                return acc;
+            }, {} as Record<string, string>);
+            setRegionMap(regionIdToNameMap);
+
             // Get all bookers
             const allUsers = await dataService.getAllUsers();
             const bookerUsers = allUsers.filter(u => u.role?.toLowerCase() === 'booker');
+
+            // Get activity logs once for all bookers (more efficient)
+            const activityLogs = await dataService.getActivityLogs(500); // Get more logs to find resets
 
             // Get discount data for each booker
             const discountPromises = bookerUsers.map(async (booker) => {
                 try {
                     const discountData = await dataService.getBookerMonthlyUnauthorizedDiscount(booker.id);
                     
-                    // Get last reset date from activity logs (if available)
-                    const activityLogs = await dataService.getActivityLogs(100);
-                    const resetLog = activityLogs.find((log: any) => 
-                        log.action?.includes('Reset unauthorized discount') && 
-                        log.userId === booker.id
-                    );
+                    // Get last reset date from activity logs - search by booker name in action message
+                    const bookerName = booker.name || 'Unknown';
+                    const resetLogs = activityLogs.filter((log: any) => {
+                        const action = log.action || '';
+                        return action.includes('Reset unauthorized discount for booker') && 
+                               action.includes(bookerName);
+                    });
+                    
+                    // Get the most recent reset log
+                    const resetLog = resetLogs.length > 0 ? resetLogs[0] : null;
+                    
+                    // Get region name from regionId
+                    const regionId = (booker as any).regionId || '';
+                    const regionName = regionId ? (regionIdToNameMap[regionId] || 'N/A') : 'N/A';
                     
                     return {
                         bookerId: booker.id,
-                        bookerName: booker.name || 'Unknown',
+                        bookerName: bookerName,
                         branch: booker.branch || 'N/A',
-                        region: booker.region || 'N/A',
+                        region: regionName,
+                        regionId: regionId,
                         currentMonth: discountData.currentMonth,
                         currentMonthTotal: discountData.currentMonthTotal,
                         allMonths: discountData.allMonths,
@@ -67,7 +91,8 @@ const AdminDiscountMonitoring: React.FC = () => {
                         orderIds: discountData.orderIds,
                         lastResetDate: resetLog?.timestamp ? 
                             (resetLog.timestamp.toDate ? resetLog.timestamp.toDate().toLocaleDateString() : 
-                             new Date(resetLog.timestamp).toLocaleDateString()) : undefined
+                             typeof resetLog.timestamp === 'string' ? new Date(resetLog.timestamp).toLocaleDateString() :
+                             new Date(resetLog.timestamp.seconds * 1000).toLocaleDateString()) : undefined
                     };
                 } catch (err) {
                     console.error(`Error loading discount data for booker ${booker.id}:`, err);
@@ -81,11 +106,51 @@ const AdminDiscountMonitoring: React.FC = () => {
             // Only show bookers with unauthorized discounts
             const bookersWithDiscounts = validData.filter(b => b.totalUnauthorizedDiscount > 0);
             
-            setAllBookers(bookersWithDiscounts);
+            // Group bookers by name and aggregate totals
+            const bookerMap = new Map<string, BookerDiscountData>();
+            bookersWithDiscounts.forEach(booker => {
+                const existing = bookerMap.get(booker.bookerName);
+                if (existing) {
+                    // Aggregate totals
+                    existing.currentMonthTotal += booker.currentMonthTotal;
+                    existing.totalUnauthorizedDiscount += booker.totalUnauthorizedDiscount;
+                    
+                    // Merge allMonths
+                    Object.keys(booker.allMonths).forEach(month => {
+                        existing.allMonths[month] = (existing.allMonths[month] || 0) + booker.allMonths[month];
+                    });
+                    
+                    // Merge orderIds (remove duplicates)
+                    existing.orderIds = [...new Set([...existing.orderIds, ...booker.orderIds])];
+                    
+                    // Track multiple IDs
+                    if (!existing.bookerIds) {
+                        existing.bookerIds = [existing.bookerId];
+                    }
+                    existing.bookerIds.push(booker.bookerId);
+                    existing.groupedCount = (existing.groupedCount || 1) + 1;
+                    
+                    // Use the most recent lastResetDate if available
+                    if (booker.lastResetDate && (!existing.lastResetDate || booker.lastResetDate > existing.lastResetDate)) {
+                        existing.lastResetDate = booker.lastResetDate;
+                    }
+                } else {
+                    // First occurrence of this name
+                    bookerMap.set(booker.bookerName, {
+                        ...booker,
+                        bookerIds: [booker.bookerId],
+                        groupedCount: 1
+                    });
+                }
+            });
             
-            // Extract unique branches and regions
-            const uniqueBranches = Array.from(new Set(bookersWithDiscounts.map(b => b.branch))).sort();
-            const uniqueRegions = Array.from(new Set(bookersWithDiscounts.map(b => b.region))).sort();
+            const groupedBookers = Array.from(bookerMap.values());
+            
+            setAllBookers(groupedBookers);
+            
+            // Extract unique branches and regions from grouped data
+            const uniqueBranches = Array.from(new Set(groupedBookers.map(b => b.branch))).filter(b => b !== 'N/A').sort();
+            const uniqueRegions = Array.from(new Set(groupedBookers.map(b => b.region))).filter(r => r !== 'N/A').sort();
             setBranches(uniqueBranches);
             setRegions(uniqueRegions);
         } catch (err: any) {
@@ -114,9 +179,19 @@ const AdminDiscountMonitoring: React.FC = () => {
     };
 
     const handleReset = async (bookerId: string, month: string, bookerName: string) => {
-        const amount = allBookers.find(b => b.bookerId === bookerId)?.allMonths[month] || 0;
+        const booker = allBookers.find(b => b.bookerId === bookerId);
+        if (!booker) {
+            alert('Booker not found');
+            return;
+        }
         
-        const confirmMessage = `Are you sure you want to reset unauthorized discount for ${bookerName}?\n\nMonth: ${month}\nAmount: Rs. ${amount.toFixed(2)}\n\nThis will mark the discount as deducted from salary.`;
+        const amount = booker.allMonths[month] || 0;
+        const bookerIdsToReset = booker.bookerIds || [bookerId];
+        const isGrouped = bookerIdsToReset.length > 1;
+        
+        const confirmMessage = isGrouped 
+            ? `Are you sure you want to reset unauthorized discount for ${bookerName}?\n\nThis will reset discounts for ${bookerIdsToReset.length} booker account(s) with this name.\n\nMonth: ${month}\nTotal Amount: Rs. ${amount.toFixed(2)}\n\nThis will mark the discount as deducted from salary.`
+            : `Are you sure you want to reset unauthorized discount for ${bookerName}?\n\nMonth: ${month}\nAmount: Rs. ${amount.toFixed(2)}\n\nThis will mark the discount as deducted from salary.`;
         
         if (!window.confirm(confirmMessage)) {
             return;
@@ -127,12 +202,18 @@ const AdminDiscountMonitoring: React.FC = () => {
             
             // Get current user (Admin)
             const currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
-            await dataService.resetBookerUnauthorizedDiscount(bookerId, month, currentUser.id || 'admin');
+            
+            // Reset for all booker IDs with the same name
+            const resetPromises = bookerIdsToReset.map(id => 
+                dataService.resetBookerUnauthorizedDiscount(id, month, currentUser.id || 'admin')
+            );
+            
+            await Promise.all(resetPromises);
             
             // Reload data
             await loadData();
             
-            alert(`Unauthorized discount for ${month} has been reset successfully!`);
+            alert(`Unauthorized discount for ${month} has been reset successfully${isGrouped ? ` for ${bookerIdsToReset.length} account(s)` : ''}!`);
         } catch (err: any) {
             console.error('Error resetting discount:', err);
             alert(`Failed to reset discount: ${err.message || 'Unknown error'}`);
@@ -166,6 +247,11 @@ const AdminDiscountMonitoring: React.FC = () => {
                 <div>
                     <h2 className="text-3xl font-black tracking-tight text-slate-900">Unauthorized Discount Monitoring</h2>
                     <p className="text-slate-500 mt-1">Monitor and manage unauthorized discounts across all bookers</p>
+                    {allBookers.some(b => b.groupedCount && b.groupedCount > 1) && (
+                        <p className="text-xs text-slate-400 mt-1 italic">
+                            Note: Bookers with duplicate names are grouped and their totals are aggregated
+                        </p>
+                    )}
                 </div>
                 {bookers.length > 0 && (
                     <button
@@ -285,11 +371,26 @@ const AdminDiscountMonitoring: React.FC = () => {
                                                 <div className="h-8 w-8 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs font-bold">
                                                     {booker.bookerName.charAt(0).toUpperCase()}
                                                 </div>
-                                                <span className="font-bold text-slate-900">{booker.bookerName}</span>
+                                                <div className="flex flex-col">
+                                                    <span className="font-bold text-slate-900">{booker.bookerName}</span>
+                                                    {booker.groupedCount && booker.groupedCount > 1 && (
+                                                        <span className="text-[10px] text-slate-400 mt-0.5" title={`${booker.groupedCount} booker accounts grouped`}>
+                                                            {booker.groupedCount} accounts merged
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </div>
                                         </td>
-                                        <td className="px-6 py-4 text-slate-700">{booker.branch}</td>
-                                        <td className="px-6 py-4 text-slate-500">{booker.region}</td>
+                                        <td className="px-6 py-4">
+                                            <span className={`text-slate-700 ${booker.branch === 'N/A' ? 'italic text-slate-400' : ''}`}>
+                                                {booker.branch}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className={`text-slate-500 ${booker.region === 'N/A' ? 'italic text-slate-400' : ''}`}>
+                                                {booker.region}
+                                            </span>
+                                        </td>
                                         <td className="px-6 py-4">
                                             <span className="px-2 py-1 rounded-lg bg-blue-50 text-blue-600 text-xs font-bold">
                                                 {booker.currentMonth}

@@ -10,6 +10,8 @@ export const spacing = {
   '4xl': 64,
 };
 
+import { createShadowStyle } from '../utils/shadowUtils';
+
 export const borderRadius = {
   none: 0,
   sm: 4,
@@ -21,56 +23,14 @@ export const borderRadius = {
 };
 
 export const shadows = {
-  none: {
-    shadowColor: 'transparent',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
-  },
-  sm: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  md: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  lg: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  xl: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 8,
-  },
+  none: createShadowStyle('transparent', { width: 0, height: 0 }, 0, 0, 0),
+  sm: createShadowStyle('#000', { width: 0, height: 1 }, 0.05, 2, 1),
+  md: createShadowStyle('#000', { width: 0, height: 2 }, 0.1, 4, 3),
+  lg: createShadowStyle('#000', { width: 0, height: 4 }, 0.15, 8, 5),
+  xl: createShadowStyle('#000', { width: 0, height: 8 }, 0.2, 16, 8),
   // Enhanced shadows with color
-  primary: {
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  secondary: {
-    shadowColor: '#22C55E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
+  primary: createShadowStyle('#DC2626', { width: 0, height: 4 }, 0.3, 8, 5),
+  secondary: createShadowStyle('#22C55E', { width: 0, height: 4 }, 0.3, 8, 5),
 };
 
 // Animation timing constants

@@ -7,7 +7,8 @@ import {
   updateProfile,
   sendPasswordResetEmail,
 } from 'firebase/auth';
-import { auth } from '../../config/firebase';
+import { enableNetwork } from 'firebase/firestore';
+import { auth, db } from '../../config/firebase';
 import { firestoreService } from './firestore';
 import { COLLECTIONS } from './collections';
 import { User, UserRole } from '../../types/auth';
@@ -17,7 +18,8 @@ import { User, UserRole } from '../../types/auth';
  */
 class FirebaseAuthService {
   /**
-   * Normalize user role to ensure it matches UserRole type (lowercase)
+   * Normalize user role to ensure it matches UserRole type
+   * Supports: booker, salesman, admin, kpo
    */
   private normalizeRole(role: any): UserRole {
     if (!role || typeof role !== 'string') {
@@ -31,6 +33,10 @@ class FirebaseAuthService {
       return 'booker';
     } else if (roleLower === 'salesman') {
       return 'salesman';
+    } else if (roleLower === 'admin' || roleLower === 'administrator') {
+      return 'admin';
+    } else if (roleLower === 'kpo' || roleLower === 'k.p.o' || roleLower === 'k.p.o.') {
+      return 'kpo';
     }
     
     // Default fallback
@@ -47,17 +53,62 @@ class FirebaseAuthService {
     const retryDelay = 1000; // 1 second
     
     try {
+      // Force enable Firestore network before login
+      try {
+        await enableNetwork(db);
+        console.log('[Auth] Firestore network enabled');
+      } catch (networkError: any) {
+        // If already enabled, that's fine
+        if (networkError.code !== 'failed-precondition') {
+          console.warn('[Auth] Network enable warning:', networkError.message);
+        }
+      }
+
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const firebaseUser = userCredential.user;
       
-      // Get user data from Firestore
-      const userData = await firestoreService.getDoc<User>(
-        COLLECTIONS.USERS,
-        firebaseUser.uid
-      );
+      // Get user data from Firestore with retry logic
+      let userData: User | null = null;
+      let firestoreError: any = null;
+      
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          // Ensure network is enabled before each attempt
+          if (attempt > 0) {
+            try {
+              await enableNetwork(db);
+              console.log(`[Auth] Re-enabled network for retry ${attempt}`);
+            } catch (e) {
+              // Ignore if already enabled
+            }
+          }
+
+          userData = await firestoreService.getDoc<User>(
+            COLLECTIONS.USERS,
+            firebaseUser.uid
+          );
+          break; // Success, exit retry loop
+        } catch (error: any) {
+          firestoreError = error;
+          const isOfflineError = error.message?.includes('offline') || 
+                                error.message?.includes('Failed to get document') ||
+                                error.message?.includes('client is offline') ||
+                                error.code === 'unavailable';
+          
+          if (isOfflineError && attempt < maxRetries) {
+            console.log(`[Auth] Firestore offline error, retrying... (${attempt + 1}/${maxRetries})`);
+            console.log(`[Auth] Error details: ${error.message}`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
+            continue;
+          } else {
+            throw error; // Re-throw if not offline error or max retries reached
+          }
+        }
+      }
       
       if (!userData) {
-        throw new Error('User data not found');
+        const errorMsg = firestoreError?.message || 'User data not found';
+        throw new Error(`User data not found in Firestore: ${errorMsg}`);
       }
       
       // Map maxDiscount to maxDiscountPercent if needed (for dashboard compatibility)
@@ -65,14 +116,18 @@ class FirebaseAuthService {
         userData.maxDiscountPercent = (userData as any).maxDiscount;
       }
       
-      // Normalize role to ensure it's lowercase (booker or salesman)
+      // Normalize role to ensure it matches UserRole type (admin, kpo, booker, salesman)
+      const normalizedRole = this.normalizeRole(userData.role);
       const normalizedUser: User = {
         ...userData,
-        role: this.normalizeRole(userData.role),
+        role: normalizedRole,
       };
       
-      console.log('Login - Raw role from DB:', userData.role, 'Type:', typeof userData.role);
-      console.log('Login - Normalized role:', normalizedUser.role);
+      console.log('[Auth] Login successful');
+      console.log('[Auth] Raw role from DB:', userData.role, 'Type:', typeof userData.role);
+      console.log('[Auth] Normalized role:', normalizedRole);
+      console.log('[Auth] User ID:', firebaseUser.uid);
+      console.log('[Auth] User email:', firebaseUser.email);
       
       return normalizedUser;
     } catch (error: any) {

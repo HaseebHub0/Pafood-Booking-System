@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { User } from '../types';
 import { dataService } from '../dataService';
 import { auth } from '../firebase';
-import { signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+import { signInWithEmailAndPassword } from 'firebase/auth';
 
 interface LoginProps {
     onLogin: (user: User) => void;

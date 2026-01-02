@@ -15,6 +15,7 @@ import { useAuthStore, useShopStore, useOrderStore, useDeliveryStore, useRouteSt
 import { Card, Badge, Skeleton, EmptyState } from '../../src/components';
 import { RoleBasedSplash } from '../../src/components/common/RoleBasedSplash';
 import { colors, typography, spacing, borderRadius, shadows, animations } from '../../src/theme';
+import { formatPKR } from '@/utils/formatters';
 
 export default function DashboardScreen() {
   const { user } = useAuthStore();
@@ -165,17 +166,82 @@ export default function DashboardScreen() {
   }, [shops, isSalesman, user?.id, user?.branch, user?.area]);
 
   useEffect(() => {
-    loadShops();
-    loadOrders();
-    if (isSalesman) {
-      loadDeliveries();
-      loadOutstandingPayments();
-      loadBills();
+    const loadDataSequentially = async () => {
+      if (isSalesman) {
+        // For salesman, load sequentially to prevent Firestore query conflicts
+        // Sequence: mappings → shops → orders → deliveries → payments → bills
+        try {
+          console.log('[Dashboard] Starting sequential load for salesman');
+          
+          // Step 1: Load mappings first (needed for shops and orders filtering)
+          const { useMappingStore } = await import('../../src/stores/mappingStore');
+          const mappingStore = useMappingStore.getState();
+          if (mappingStore.mappings.length === 0 && !mappingStore.isLoading) {
+            console.log('[Dashboard] Loading mappings first');
+            await mappingStore.loadMappings();
+            await new Promise(resolve => setTimeout(resolve, 50)); // Small delay
+          }
+          
+          // Step 2: Load shops (depends on mappings)
+          console.log('[Dashboard] Loading shops');
+          await loadShops();
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Step 3: Load orders (depends on mappings)
+          console.log('[Dashboard] Loading orders');
+          await loadOrders();
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Step 4: Load deliveries (depends on orders)
+          console.log('[Dashboard] Loading deliveries');
+          await loadDeliveries();
+          await new Promise(resolve => setTimeout(resolve, 150));
+          
+          // Step 5: Load payments and bills
+          console.log('[Dashboard] Loading payments and bills');
+          await loadOutstandingPayments();
+          await loadBills();
+          
+          console.log('[Dashboard] Sequential load completed for salesman');
+        } catch (error: any) {
+          console.error('[Dashboard] Error loading data for salesman:', error?.message || error);
+        }
+      } else {
+        // For other roles, also load sequentially to prevent Firestore conflicts
+        console.log('[Dashboard] Starting sequential load for role:', user?.role);
+        try {
+          // Step 1: Load shops
+          await loadShops();
+          await new Promise(resolve => setTimeout(resolve, 150));
+          
+          // Step 2: Load orders
+          await loadOrders();
+          await new Promise(resolve => setTimeout(resolve, 150));
+          
+          // Step 3: Load routes for bookers
+          if (isBooker) {
+            await loadRoutes();
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          
+          // Step 4: Load other data
+          await loadDeliveries();
+          await new Promise(resolve => setTimeout(resolve, 100));
+          await loadOutstandingPayments();
+          await loadBills();
+          
+          console.log('[Dashboard] Sequential load completed for role:', user?.role);
+        } catch (error: any) {
+          console.error('[Dashboard] Error loading data:', error?.message || error);
+        }
+      }
+    };
+    
+    // Only load if user is authenticated
+    if (user) {
+      loadDataSequentially();
     }
-    if (isBooker) {
-      loadRoutes();
-    }
-  }, []);
+  }, [user?.id, isSalesman, isBooker]);
 
   // Calculate outstanding payments stats for salesman
   const outstandingPaymentsStats = useMemo(() => {
@@ -238,14 +304,27 @@ export default function DashboardScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    const promises = [loadShops(), loadOrders()];
-    if (isSalesman) {
-      promises.push(loadDeliveries());
-      promises.push(loadOutstandingPayments());
+    try {
+      if (isSalesman) {
+        // For salesman, load sequentially to prevent Firestore query conflicts
+        await loadShops();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await loadOrders();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await loadDeliveries();
+        await loadOutstandingPayments();
+        await loadBills();
+      } else {
+        // For other roles, load in parallel
+        const promises = [loadShops(), loadOrders()];
+        if (isBooker) promises.push(loadRoutes());
+        await Promise.all(promises);
+      }
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    } finally {
+      setRefreshing(false);
     }
-    if (isBooker) promises.push(loadRoutes());
-    await Promise.all(promises);
-    setRefreshing(false);
   };
 
   const recentOrders = isSalesman 
@@ -384,31 +463,26 @@ export default function DashboardScreen() {
         )}
 
         {/* Pending Credit Card - For Salesmen */}
-        {isSalesman && user?.id && (() => {
-          const pendingBills = getPendingCreditBills(user.id);
-          const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.remainingCredit || 0), 0);
-          
-          if (pendingBills.length === 0) return null;
-          
-          return (
-            <View style={styles.statsRow}>
-              <TouchableOpacity
-                style={[styles.statCard, { backgroundColor: colors.warning }]}
-                onPress={() => router.push('/(tabs)/payments')}
-                activeOpacity={0.8}
-              >
-                <View style={styles.statIcon}>
-                  <Ionicons name="cash-outline" size={24} color={colors.warning} />
-                </View>
-                <Text style={styles.statNumber}>{pendingBills.length}</Text>
-                <Text style={styles.statLabel}>Pending Credit Bills</Text>
-                <Text style={styles.statSubLabel}>
-                  {formatPKR(totalPendingAmount)}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          );
-        })()}
+        {isSalesman && user?.id && (
+          <View style={styles.statsRow}>
+            <TouchableOpacity
+              style={[styles.statCard, { backgroundColor: colors.warning }]}
+              onPress={() => router.push('/(tabs)/payments')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.statIcon}>
+                <Ionicons name="cash-outline" size={24} color={colors.warning} />
+              </View>
+              <Text style={styles.statNumber}>
+                {outstandingPaymentsStats.count}
+              </Text>
+              <Text style={styles.statLabel}>Pending Credit</Text>
+              <Text style={styles.statSubLabel}>
+                {formatPKR(outstandingPaymentsStats.totalAmount)}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Quick Actions */}
         <Text style={styles.sectionTitle}>Quick Actions</Text>

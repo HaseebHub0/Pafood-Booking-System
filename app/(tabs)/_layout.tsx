@@ -4,6 +4,7 @@ import { Tabs, useSegments } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
 import { useAuthStore } from '../../src/stores';
+import { createShadowStyle } from '../../src/utils/shadowUtils';
 
 export default function TabsLayout() {
   const segments = useSegments();
@@ -51,11 +52,7 @@ export default function TabsLayout() {
         marginBottom: spacing.md,
         borderRadius: borderRadius.xl,
         position: 'absolute' as const,
-        elevation: 10,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
+        ...createShadowStyle('#000', { width: 0, height: -4 }, 0.1, 8, 10),
       };
 
   return (

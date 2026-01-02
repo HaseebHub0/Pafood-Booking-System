@@ -8,8 +8,46 @@ import { formatRelativeTime } from '../utils/dateUtils';
 const AdminDashboard: React.FC = () => {
     const { data, isLoading, error, refresh } = useDashboardData();
 
+    // Show error but don't hide existing data if available
+    if (error && !data && !isLoading) {
+        return (
+            <div className="space-y-8">
+                <div className="flex flex-col gap-1">
+                    <h2 className="text-3xl font-black tracking-tight text-slate-900">Admin Overview</h2>
+                    <p className="text-slate-500">Global insights into sales and regional performance.</p>
+                </div>
+                <div className="rounded-xl bg-red-50 p-6 border border-red-200">
+                    <p className="text-red-800 font-medium">Error: {error}</p>
+                    <p className="text-red-600 text-sm mt-2">Please check browser console for detailed error information.</p>
+                    <button 
+                        onClick={refresh}
+                        className="mt-4 px-4 py-2 rounded-lg bg-primary text-white font-bold hover:bg-red-700 transition-all"
+                    >
+                        Retry
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="space-y-3 md:space-y-4">
+            {/* Show error banner if error exists but data is available (non-blocking) */}
+            {error && data && (
+                <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-3">
+                    <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-yellow-600 text-sm">warning</span>
+                        <p className="text-yellow-800 text-sm font-medium">{error}</p>
+                        <button 
+                            onClick={refresh}
+                            className="ml-auto text-yellow-700 hover:text-yellow-900 text-sm font-semibold underline"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                </div>
+            )}
+            
             {/* Page Title Area */}
             <div className="flex flex-col gap-0.5">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">

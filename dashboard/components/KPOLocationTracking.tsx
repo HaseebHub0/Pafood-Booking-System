@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { db, collections } from '../firebase';
-import { onSnapshot, query, where, Timestamp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
+import { onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 import BookerLocationMap from './BookerLocationMap';
 
 interface KPOLocationTrackingProps {
@@ -55,6 +55,9 @@ const KPOLocationTracking: React.FC<KPOLocationTrackingProps> = ({ user }) => {
             ? query(collections.bookerLocations, ...constraints)
             : collections.bookerLocations;
 
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/KPOLocationTracking.tsx:58',message:'KPOLocationTracking onSnapshot called',data:{collection:'bookerLocations',hasConstraints:constraints.length>0},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+        // #endregion
         const unsubscribe = onSnapshot(
             q,
             (snapshot) => {
@@ -106,7 +109,27 @@ const KPOLocationTracking: React.FC<KPOLocationTrackingProps> = ({ user }) => {
                     setIsLoading(false);
                 }
             },
-            (err) => {
+            (err: any) => {
+                // Handle Firestore internal assertion errors
+                const isInternalError = err.message?.includes('INTERNAL ASSERTION FAILED') ||
+                                        err.message?.includes('Unexpected state') ||
+                                        err.code === 'ca9' ||
+                                        err.code === 'c050' ||
+                                        err.code === 'b815' ||
+                                        (err.message && err.message.includes('ID: ca9')) ||
+                                        (err.message && err.message.includes('ID: c050')) ||
+                                        (err.message && err.message.includes('ID: b815'));
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/KPOLocationTracking.tsx:112',message:'KPOLocationTracking error callback',data:{isInternalError,errorMessage:err?.message?.substring(0,200),errorCode:err?.code},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+                // #endregion
+                
+                if (isInternalError) {
+                    console.warn('Firestore Internal Assertion Error in location tracking. This is usually temporary and will recover.');
+                    // Don't set error state - let the listener continue
+                    return;
+                }
+                
                 console.error('Error subscribing to location updates:', err);
                 setError(err.message || 'Failed to subscribe to location updates');
                 setIsLoading(false);

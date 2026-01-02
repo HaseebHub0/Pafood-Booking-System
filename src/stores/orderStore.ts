@@ -82,6 +82,44 @@ const generateOrderNumber = (): string => {
   return `ORD-${year}-${random}`;
 };
 
+// Helper function for retrying with exponential backoff
+async function retryWithBackoff<T>(
+  operation: () => Promise<T>,
+  retries: number = 2,
+  delay: number = 100
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Check if it's a Firestore internal assertion error (ca9 for reads/listens, c050 for writes, b815 for async queue)
+      const isInternalError = error.message?.includes('INTERNAL ASSERTION FAILED') ||
+                              error.message?.includes('Unexpected state') ||
+                              error.code === 'ca9' ||
+                              error.code === 'c050' ||
+                              error.code === 'b815' ||
+                              (error.message && error.message.includes('ID: ca9')) ||
+                              (error.message && error.message.includes('ID: c050')) ||
+                              (error.message && error.message.includes('ID: b815'));
+      
+      if (isInternalError && attempt < retries) {
+        const waitTime = delay * Math.pow(2, attempt); // Exponential backoff
+        console.warn(`[OrderStore] Firestore internal error (attempt ${attempt + 1}/${retries + 1}), retrying in ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      throw error;
+    }
+  }
+  
+  throw lastError;
+}
+
 export const useOrderStore = create<OrderStore>((set, get) => ({
   // Initial state
   orders: [],
@@ -105,11 +143,13 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
         
         if (currentUser?.role === 'booker') {
           // Get orders for current booker (without orderBy to avoid index requirement)
-          ordersList = await firestoreService.getDocsWhere<Order>(
-            COLLECTIONS.ORDERS,
-            'bookerId',
-            '==',
-            currentUser.id
+          ordersList = await retryWithBackoff(() =>
+            firestoreService.getDocsWhere<Order>(
+              COLLECTIONS.ORDERS,
+              'bookerId',
+              '==',
+              currentUser.id
+            )
           );
           // Filter by region
           ordersList = ordersList.filter(order => order.regionId === currentUser.regionId);
@@ -119,9 +159,11 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
           );
         } else if (currentUser?.role === 'admin' || currentUser?.role === 'owner') {
           // Admin/Owner can see all orders
-          ordersList = await firestoreService.getDocs<Order>(
-            COLLECTIONS.ORDERS,
-            []
+          ordersList = await retryWithBackoff(() =>
+            firestoreService.getDocs<Order>(
+              COLLECTIONS.ORDERS,
+              []
+            )
           );
           // Sort in memory
           ordersList.sort((a, b) => 
@@ -129,11 +171,13 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
           );
         } else if (currentUser?.role === 'kpo') {
           // KPO can see orders in their region
-          ordersList = await firestoreService.getDocsWhere<Order>(
-            COLLECTIONS.ORDERS,
-            'regionId',
-            '==',
-            currentUser.regionId
+          ordersList = await retryWithBackoff(() =>
+            firestoreService.getDocsWhere<Order>(
+              COLLECTIONS.ORDERS,
+              'regionId',
+              '==',
+              currentUser.regionId
+            )
           );
           // Sort in memory
           ordersList.sort((a, b) => 
@@ -141,71 +185,100 @@ export const useOrderStore = create<OrderStore>((set, get) => ({
           );
         } else if (currentUser?.role?.toLowerCase() === 'salesman') {
           // Salesman can see only approved orders from assigned bookers
-          console.log('Loading orders for salesman:', currentUser.id, 'regionId:', currentUser.regionId);
+          console.log('[OrderStore] Loading orders for salesman:', {
+            id: currentUser.id,
+            regionId: currentUser.regionId,
+            branch: currentUser.branch,
+          });
           
-          try {
-            const { useMappingStore } = await import('./mappingStore');
-            const mappingStore = useMappingStore.getState();
-            await mappingStore.loadMappings();
-            const assignedBookerIds = mappingStore.getBookersForSalesman(currentUser.id);
-            
-            if (assignedBookerIds.length > 0) {
-              // Get all orders in the region first (for performance)
-              const regionOrders = currentUser?.regionId
-                ? await firestoreService.getDocsWhere<Order>(
+          // Guard: Ensure salesman has an ID before querying mappings
+          if (!currentUser.id || currentUser.id.trim() === '') {
+            console.warn('[OrderStore] Salesman has no ID, cannot filter orders by mappings');
+            ordersList = [];
+          } else {
+            try {
+              const { useMappingStore } = await import('./mappingStore');
+              const mappingStore = useMappingStore.getState();
+              
+              // Load mappings if not already loaded
+              if (mappingStore.mappings.length === 0 && !mappingStore.isLoading) {
+                console.log('[OrderStore] Loading mappings for order filtering');
+                await mappingStore.loadMappings();
+              }
+              
+              const assignedBookerIds = mappingStore.getBookersForSalesman(currentUser.id);
+              
+              if (assignedBookerIds.length > 0) {
+                // Get all orders in the region first (for performance)
+                // Guard: Ensure regionId is valid before querying
+                const regionOrders = currentUser?.regionId && currentUser.regionId.trim() !== ''
+                  ? await retryWithBackoff(() =>
+                      firestoreService.getDocsWhere<Order>(
+                        COLLECTIONS.ORDERS,
+                        'regionId',
+                        '==',
+                        currentUser.regionId
+                      )
+                    )
+                  : await retryWithBackoff(() =>
+                      firestoreService.getDocs<Order>(COLLECTIONS.ORDERS, [])
+                    );
+                
+                // Filter orders by assigned booker IDs and only show approved or higher status
+                ordersList = regionOrders.filter(order => 
+                  assignedBookerIds.includes(order.bookerId) && 
+                  order.status !== 'draft' &&
+                  (order.status === 'approved' || order.status === 'billed' || order.status === 'load_form_ready' || order.status === 'assigned' || order.status === 'delivered')
+                );
+                
+                console.log(`[OrderStore] Found ${ordersList.length} approved orders from ${assignedBookerIds.length} assigned bookers`);
+              } else {
+                // No bookers assigned - show no orders
+                ordersList = [];
+                console.log('[OrderStore] No bookers assigned to salesman, showing no orders');
+              }
+            } catch (error: any) {
+              console.warn('[OrderStore] Failed to load mappings for order filtering, falling back to branch:', error?.message || error);
+              // Fallback to branch-based filtering (old behavior)
+              if (currentUser?.branch && currentUser.branch.trim() !== '') {
+                const regionOrders = currentUser?.regionId && currentUser.regionId.trim() !== ''
+                  ? await retryWithBackoff(() =>
+                      firestoreService.getDocsWhere<Order>(
+                        COLLECTIONS.ORDERS,
+                        'regionId',
+                        '==',
+                        currentUser.regionId
+                      )
+                    )
+                  : await retryWithBackoff(() =>
+                      firestoreService.getDocs<Order>(COLLECTIONS.ORDERS, [])
+                    );
+                
+                const allUsers = await retryWithBackoff(() =>
+                  firestoreService.getDocs<any>(COLLECTIONS.USERS, [])
+                );
+                const branchBookers = allUsers.filter(
+                  (user: any) => 
+                    user.branch === currentUser.branch && 
+                    (user.role || '').toLowerCase() === 'booker'
+                );
+                const bookerIds = branchBookers.map((b: any) => b.id);
+                ordersList = regionOrders.filter(order => bookerIds.includes(order.bookerId));
+              } else if (currentUser?.regionId && currentUser.regionId.trim() !== '') {
+                ordersList = await retryWithBackoff(() =>
+                  firestoreService.getDocsWhere<Order>(
                     COLLECTIONS.ORDERS,
                     'regionId',
                     '==',
                     currentUser.regionId
                   )
-                : await firestoreService.getDocs<Order>(COLLECTIONS.ORDERS, []);
-              
-              // Filter orders by assigned booker IDs and only show approved or higher status
-              ordersList = regionOrders.filter(order => 
-                assignedBookerIds.includes(order.bookerId) && 
-                order.status !== 'draft' &&
-                (order.status === 'approved' || order.status === 'billed' || order.status === 'load_form_ready' || order.status === 'assigned' || order.status === 'delivered')
-              );
-              
-              console.log(`Found ${ordersList.length} approved orders from ${assignedBookerIds.length} assigned bookers`);
-            } else {
-              // No bookers assigned - show no orders
-              ordersList = [];
-              console.log('No bookers assigned to salesman, showing no orders');
+                );
+              } else {
+                ordersList = [];
+              }
+              // Exclude draft orders
+              ordersList = ordersList.filter(order => order.status !== 'draft');
             }
-          } catch (error) {
-            console.warn('Failed to load mappings for order filtering, falling back to branch:', error);
-            // Fallback to branch-based filtering (old behavior)
-            if (currentUser?.branch) {
-              const regionOrders = currentUser?.regionId
-                ? await firestoreService.getDocsWhere<Order>(
-                    COLLECTIONS.ORDERS,
-                    'regionId',
-                    '==',
-                    currentUser.regionId
-                  )
-                : await firestoreService.getDocs<Order>(COLLECTIONS.ORDERS, []);
-              
-              const allUsers = await firestoreService.getDocs<any>(COLLECTIONS.USERS, []);
-              const branchBookers = allUsers.filter(
-                (user: any) => 
-                  user.branch === currentUser.branch && 
-                  (user.role || '').toLowerCase() === 'booker'
-              );
-              const bookerIds = branchBookers.map((b: any) => b.id);
-              ordersList = regionOrders.filter(order => bookerIds.includes(order.bookerId));
-            } else if (currentUser?.regionId) {
-              ordersList = await firestoreService.getDocsWhere<Order>(
-                COLLECTIONS.ORDERS,
-                'regionId',
-                '==',
-                currentUser.regionId
-              );
-            } else {
-              ordersList = [];
-            }
-            // Exclude draft orders
-            ordersList = ordersList.filter(order => order.status !== 'draft');
           }
           
           // Sort in memory

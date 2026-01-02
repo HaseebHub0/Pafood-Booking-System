@@ -7,6 +7,7 @@ import { Shop } from '../../types/shop';
 import { firestoreService } from '../../services/firebase';
 import { COLLECTIONS } from '../../services/firebase/collections';
 import { BookerLocation } from '../../types/location';
+import { createShadowStyle } from '../../utils/shadowUtils';
 
 // Conditional import for react-native-maps
 // Use require() to avoid bundling on web
@@ -342,11 +343,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    ...createShadowStyle('#000', { width: 0, height: 2 }, 0.25, 3.84, 5),
   },
   webNavButton: {
     position: 'relative',

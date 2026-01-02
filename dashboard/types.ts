@@ -163,4 +163,6 @@ export interface LedgerEntry {
 export interface ChartData {
     name: string;
     value: number;
+    regionId?: string;
+    branches?: Array<{ branchId: string; branchName: string; sales: number }>;
 }
