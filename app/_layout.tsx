@@ -134,21 +134,40 @@ export default function RootLayout() {
           // Continue even if Firebase init fails - app should still work
         }
         
-        // Now check auth status (with error handling)
+        // Now check auth status (with error handling and timeout)
         try {
           // #region agent log
           fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:130',message:'About to call checkAuth',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
           // #endregion
-          await checkAuth();
+          
+          // Add timeout to prevent infinite loading
+          const checkAuthPromise = checkAuth();
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+              console.warn('[App] checkAuth timeout - forcing isLoading to false');
+              useAuthStore.getState().set({ isLoading: false });
+              resolve(false);
+            }, 10000); // 10 second timeout
+          });
+          
+          await Promise.race([checkAuthPromise, timeoutPromise]);
           // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:133',message:'checkAuth completed successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:145',message:'checkAuth completed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
           // #endregion
         } catch (authError) {
           // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:136',message:'Auth check error caught',data:{errorMessage:authError?.message?.substring(0,200),errorStack:authError?.stack?.substring(0,300)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:150',message:'Auth check error caught',data:{errorMessage:authError?.message?.substring(0,200),errorStack:authError?.stack?.substring(0,300)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
           // #endregion
           console.error('[App] Auth check error:', authError);
-          // Don't crash app if auth check fails
+          // Ensure isLoading is set to false even if checkAuth fails
+          useAuthStore.getState().set({ isLoading: false });
+        }
+        
+        // Final safety check - ensure isLoading is false after all initialization
+        const currentState = useAuthStore.getState();
+        if (currentState.isLoading) {
+          console.warn('[App] isLoading still true after init, forcing to false');
+          useAuthStore.getState().set({ isLoading: false });
         }
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/abb08022-2053-4b74-b83b-ae5ba940a17c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/_layout.tsx:141',message:'initApp completed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
